@@ -1,5 +1,5 @@
 # P4DS
-FinQA-GPT-4o-Framework
+FinQA-GPT-4o-mini-Framework
 
 
 ### 1. Setting
