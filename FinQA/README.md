@@ -31,7 +31,8 @@ uv >= 0.6.14, python >= 3.13
 
 ```
 $ uv venv
-$ uv sync
+$ source .venv/bin/activate
+$ uv pip install -r requirements.txt
 ```
 
 ## Set Environment
