@@ -43,7 +43,28 @@ You should create a `.env` file in the root directory of the project. This file 
 OPENAI_API_KEY="[your_openai_api_key]"
 ```
 
+## Project Structure
+
+The code has been organized to separate the MCP server logic from the Streamlit UI:
+
+- `mcp_handler.py`: Contains the core logic for MCP client initialization and query processing
+- `streamlit_app.py`: Contains the Streamlit UI code that utilizes the MCP handler
+
+This separation allows for easier maintenance and future enhancements.
+
+## Running the Streamlit App
+
+To run the Streamlit web interface:
+
+```
+$ streamlit run streamlit_app.py
+```
+
+This will launch a web server. Open your browser and navigate to `http://localhost:8501` to access the interface.
+
 ## Run MCP Client and Get Accuracy
+
+To run the batch processing and accuracy evaluation:
 
 ```
 $ python mcp_client.py
