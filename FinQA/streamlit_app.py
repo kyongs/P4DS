@@ -54,24 +54,18 @@ async def cleanup_mcp_client():
 
 def print_message():
     """
-    Displays chat history on the screen.
+    Displays chat history on the screen (simplified version).
     """
-    i = 0
-    while i < len(st.session_state.history):
-        message = st.session_state.history[i]
-
+    for i, message in enumerate(st.session_state.history):
         if message["role"] == "user":
             st.chat_message("user", avatar="🧑‍💻").markdown(message["content"])
-            i += 1
         elif message["role"] == "assistant":
-            # Create assistant message container
+            # Only display assistant messages (no tool call info or processes)
             with st.chat_message("assistant", avatar="🤖"):
-                # Display assistant message content
                 st.markdown(message["content"])
-
+                
                 # Check if we have process steps for this message
-                message_id = i
-                process_key = f"process_steps_{message_id-1}"  # User message is right before assistant message
+                process_key = f"process_steps_{i}"
                 if process_key in st.session_state and st.session_state[process_key]:
                     process_steps = st.session_state[process_key]
                     # Show process steps in expander
@@ -85,229 +79,139 @@ def print_message():
                                 st.success(step['content'])
                             elif step["role"] == "tool":
                                 st.markdown(f"### 🔍 Raw Data Retrieved:")
-                                if "," in step["content"] and any(x in step["content"].lower() for x in ['hqla', 'billions']):
-                                    # Display raw CSV data in a more readable format
-                                    csv_lines = step["content"].strip().split('\r\n')
-                                    for line in csv_lines:
-                                        st.code(line, language=None)
-                                else:
-                                    st.code(step['content'], language=None)
+                                st.code(step['content'], language=None)
                             
                             # Add separator if not the last step
                             if idx < len(process_steps) - 1:
                                 st.divider()
 
-                # Check if the next message is tool call information
-                if (
-                    i + 1 < len(st.session_state.history)
-                    and st.session_state.history[i + 1]["role"] == "assistant_tool"
-                ):
-                    # Display tool call information in the same container as an expander
-                    with st.expander("🔧 Tool Call Information", expanded=False):
-                        st.markdown(st.session_state.history[i + 1]["content"])
-                    i += 2  # Increment by 2 as we processed two messages together
-                else:
-                    i += 1  # Increment by 1 as we only processed a regular message
-        elif message["role"] == "thought":
-            # Display thought process in a unique container
-            with st.chat_message("assistant", avatar="💭"):
-                st.markdown(f"**Thought Process:**\n{message['content']}")
-            i += 1
-        else:
-            # Skip assistant_tool messages as they are handled above
-            i += 1
-
-def get_streaming_callback(text_placeholder, tool_placeholder, thought_placeholder):
-    """
-    Creates a streaming callback function.
-    """
+def get_streaming_callback(text_placeholder):
     accumulated_text = []
-    accumulated_tool = []
-    accumulated_thought = []
-    current_thought = []
-    in_thought = False
-    
-    # Add storage for raw responses to show in process breakdown
-    process_steps = []
 
     def callback_func(message: dict):
-        nonlocal accumulated_text, accumulated_tool, accumulated_thought, current_thought, in_thought, process_steps
+        nonlocal accumulated_text
         message_content = message.get("content", None)
-
-        # Store step in process breakdown
-        if message_content:
-            if isinstance(message_content, ToolMessage):
-                process_steps.append({
-                    "role": "tool",
-                    "content": str(message_content.content)
-                })
-            elif isinstance(message_content, AIMessageChunk):
-                if hasattr(message_content, 'content') and message_content.content:
-                    # Check if it's not a thought message
-                    content = message_content.content
-                    if isinstance(content, str) and not content.lstrip().lower().startswith("thought"):
-                        process_steps.append({
-                            "role": "ai",
-                            "content": content
-                        })
 
         if isinstance(message_content, AIMessageChunk):
             content = message_content.content
-
+            
+            # If content is a simple string
+            if isinstance(content, str):
+                accumulated_text.append(content)
+                text_placeholder.markdown("".join(accumulated_text))
             # If content is in list form (mainly occurs in Claude models)
-            if isinstance(content, list) and len(content) > 0:
-                message_chunk = content[0]
-                # Process text type
-                if message_chunk["type"] == "text":
-                    text_chunk = message_chunk["text"]
-                    
-                    # Check if this is a thought process
-                    if text_chunk.lstrip().lower().startswith("thought") or in_thought:
-                        in_thought = True
-                        current_thought.append(text_chunk)
-                        
-                        # Check if thought has ended
-                        if "\n\nAction:" in text_chunk or "\n\nFinal Answer:" in text_chunk:
-                            in_thought = False
-                            accumulated_thought.append("".join(current_thought))
-                            thought_placeholder.markdown("".join(accumulated_thought))
-                            current_thought = []
-                        else:
-                            thought_placeholder.markdown("".join(current_thought))
-                    else:
-                        accumulated_text.append(text_chunk)
-                        text_placeholder.markdown("".join(accumulated_text))
-                
-                # Process tool use type
-                elif message_chunk["type"] == "tool_use":
-                    if "partial_json" in message_chunk:
-                        accumulated_tool.append(message_chunk["partial_json"])
-                    else:
-                        tool_call_chunks = message_content.tool_call_chunks
-                        tool_call_chunk = tool_call_chunks[0]
-                        accumulated_tool.append(
-                            "\n```json\n" + str(tool_call_chunk) + "\n```\n"
-                        )
-                    with tool_placeholder.expander(
-                        "🔧 Tool Call Information", expanded=True
-                    ):
-                        st.markdown("".join(accumulated_tool))
-            
-            # Process if content is a simple string
-            elif isinstance(content, str):
-                # Check if this is a thought process
-                if content.lstrip().lower().startswith("thought") or in_thought:
-                    in_thought = True
-                    current_thought.append(content)
-                    
-                    # Check if thought has ended
-                    if "\n\nAction:" in content or "\n\nFinal Answer:" in content:
-                        in_thought = False
-                        accumulated_thought.append("".join(current_thought))
-                        thought_placeholder.markdown("".join(accumulated_thought))
-                        current_thought = []
-                    else:
-                        thought_placeholder.markdown("".join(current_thought))
-                else:
-                    accumulated_text.append(content)
-                    text_placeholder.markdown("".join(accumulated_text))
-            
-            # Process tool call related information
-            elif (
-                hasattr(message_content, "tool_calls")
-                and message_content.tool_calls
-                and len(message_content.tool_calls[0]["name"]) > 0
-            ):
-                tool_call_info = message_content.tool_calls[0]
-                accumulated_tool.append("\n```json\n" + str(tool_call_info) + "\n```\n")
-                with tool_placeholder.expander(
-                    "🔧 Tool Call Information", expanded=True
-                ):
-                    st.markdown("".join(accumulated_tool))
-            
-            # Handle other tool-related data formats
-            elif (
-                hasattr(message_content, "tool_call_chunks")
-                and message_content.tool_call_chunks
-            ):
-                tool_call_chunk = message_content.tool_call_chunks[0]
-                accumulated_tool.append(
-                    "\n```json\n" + str(tool_call_chunk) + "\n```\n"
-                )
-                with tool_placeholder.expander(
-                    "🔧 Tool Call Information", expanded=True
-                ):
-                    st.markdown("".join(accumulated_tool))
-            
-            elif (
-                hasattr(message_content, "additional_kwargs")
-                and "tool_calls" in message_content.additional_kwargs
-            ):
-                tool_call_info = message_content.additional_kwargs["tool_calls"][0]
-                accumulated_tool.append("\n```json\n" + str(tool_call_info) + "\n```\n")
-                with tool_placeholder.expander(
-                    "🔧 Tool Call Information", expanded=True
-                ):
-                    st.markdown("".join(accumulated_tool))
+            elif isinstance(content, list) and len(content) > 0:
+                for item in content:
+                    if isinstance(item, dict) and "text" in item:
+                        accumulated_text.append(item["text"])
+                text_placeholder.markdown("".join(accumulated_text))
         
-        # Process if it's a tool message (tool response)
+        # ToolMessage is not included in the final result
         elif isinstance(message_content, ToolMessage):
-            accumulated_tool.append(
-                "\n```json\n" + str(message_content.content) + "\n```\n"
-            )
-            with tool_placeholder.expander("🔧 Tool Call Information", expanded=True):
-                st.markdown("".join(accumulated_tool))
-                
+            # We can optionally log tool responses, but they won't be shown to user
+            pass
+            
         return None
 
-    return callback_func, accumulated_text, accumulated_tool, accumulated_thought, process_steps
+    return callback_func, accumulated_text
 
-async def astream_graph(agent, input_dict, callback, config):
+async def astream_graph(agent, input_dict, callback_tuple, config):
     """
     Streams the agent execution.
     """
+    # Unpack the callback tuple
+    callback_func, accumulated_text = callback_tuple
+    
     result = await agent.ainvoke(
         input_dict,
         config={**config, "return_messages": True}
     )
     
+    # Debug: Print result structure
+    print(f"Agent result structure: {type(result)}")
+    if isinstance(result, dict):
+        print(f"Result keys: {result.keys()}")
+        if "messages" in result:
+            print(f"Messages type: {type(result['messages'])}")
+            print(f"Messages count: {len(result['messages'])}")
+    
     # Process each message in the trace
-    for message in result["messages"]:
-        role = getattr(message, "role", getattr(message, "type", "assistant"))
-        content = getattr(message, "content", str(message))
-        
-        # Skip empty messages
-        if not content:
-            continue
+    final_answer = ""
+    
+    # Collect process steps
+    process_steps = []
+    
+    # Add the initial question
+    if isinstance(input_dict, dict) and "messages" in input_dict and input_dict["messages"]:
+        # Extract the query
+        query_msg = input_dict["messages"][0]
+        if hasattr(query_msg, "content"):
+            process_steps.append({
+                "role": "human",
+                "content": query_msg.content
+            })
+    
+    if isinstance(result, dict) and "messages" in result:
+        for message in result["messages"]:
+            role = getattr(message, "role", getattr(message, "type", "assistant"))
+            content = getattr(message, "content", str(message))
             
-        # Create a dict structure that matches the expected callback format
-        message_dict = {"content": message}
-        callback(message_dict)
-        
-        # Add small delay to make streaming look natural
-        await asyncio.sleep(0.05)
-        
-    return result
+            # Skip empty messages
+            if not content:
+                continue
+                
+            # Store final answer (last assistant message)
+            if role == "assistant" and isinstance(content, str):
+                final_answer = content
+                # Add to process steps if it's meaningful
+                if content.strip():
+                    process_steps.append({
+                        "role": "ai",
+                        "content": content
+                    })
+            
+            # Store tool responses in process steps
+            if role == "tool" and isinstance(content, str):
+                process_steps.append({
+                    "role": "tool",
+                    "content": content
+                })
+                
+            # Create a dict structure that matches the expected callback format
+            message_dict = {"content": message}
+            callback_func(message_dict)  # Use callback_func here, not the tuple
+            
+            # Add small delay to make streaming look natural
+            await asyncio.sleep(0.05)
+    
+    # If we have a final answer but the callback didn't process it correctly,
+    # force update the text placeholder through the accumulated_text
+    if final_answer and not "".join(accumulated_text):  # If accumulated_text is empty
+        accumulated_text.append(final_answer)
+    
+    # Return result and process steps
+    return result, process_steps
 
-async def process_query(query, text_placeholder, tool_placeholder, thought_placeholder, process_placeholder, timeout_seconds=60):
+async def process_query(query, text_placeholder, timeout_seconds=60):
     """
-    Processes user questions and generates responses.
+    Processes user questions and generates responses (simplified version).
     """
     try:
         if st.session_state.agent:
-            streaming_callback, accumulated_text, accumulated_tool, accumulated_thought, process_steps = (
-                get_streaming_callback(text_placeholder, tool_placeholder, thought_placeholder)
-            )
+            streaming_callback, accumulated_text = get_streaming_callback(text_placeholder)
+            
             try:
-                # Debug: Print the query and message format
-                print(f"Processing query: {query}")
-                print(f"Messages format: {{'messages': '{query}'}}")
+                # Format query correctly with HumanMessage
+                query_msg = HumanMessage(content=query)
                 
-                response = await asyncio.wait_for(
+                # Debug: Print input structure
+                print(f"Query input: {query_msg}")
+                
+                response, process_steps = await asyncio.wait_for(
                     astream_graph(
                         st.session_state.agent,
-                        {"messages": query},  # Same format as mcp_client_wo_thought.py
-                        callback=streaming_callback,
+                        {"messages": [query_msg]},  # Use list with message object
+                        callback_tuple=(streaming_callback, accumulated_text),  # Match parameter name in astream_graph
                         config=RunnableConfig(
                             recursion_limit=st.session_state.recursion_limit,
                             thread_id=st.session_state.thread_id,
@@ -317,100 +221,40 @@ async def process_query(query, text_placeholder, tool_placeholder, thought_place
                 )
             except asyncio.TimeoutError:
                 error_msg = f"⏱️ Request time exceeded {timeout_seconds} seconds. Please try again later."
-                return {"error": error_msg}, error_msg, "", [], []
+                return {"error": error_msg}, error_msg, []
 
+            # Check if we got a response in accumulated_text
             final_text = "".join(accumulated_text)
-            final_tool = "".join(accumulated_tool)
-            final_thought = "".join(accumulated_thought)
             
-            # Look for raw table data in tool responses
-            raw_table_data = None
-            for step in process_steps:
-                if step["role"] == "tool" and "," in step["content"] and any(x in step["content"].lower() for x in ['hqla', 'billions']):
-                    raw_table_data = step["content"]
-                    break
+            # If no text was accumulated but we have a response, try to extract it
+            if not final_text and isinstance(response, dict):
+                if "messages" in response:
+                    # Get the last message from the response
+                    for msg in reversed(response["messages"]):
+                        if hasattr(msg, "content") and isinstance(msg.content, str):
+                            final_text = msg.content
+                            break
             
-            # If we found HQLA data, use that as the final text instead of the generated response
-            if raw_table_data and "hqla" in raw_table_data.lower():
-                final_text = raw_table_data
-                # Update text placeholder with raw table data
-                text_placeholder.markdown(f"```\n{raw_table_data}\n```")
-            
-            # Make sure the final answer is in process steps
-            # Sometimes the streaming callbacks miss the final answer
-            if process_steps and process_steps[-1]["role"] != "ai" and final_text:
-                process_steps.append({
-                    "role": "ai", 
-                    "content": final_text
-                })
-            
-            # Add initial query to process steps
-            process_steps_with_query = [{"role": "human", "content": query}]
-            
-            # Filter steps to focus on query-tool-answer flow
-            cleaned_steps = []
-            for step in process_steps:
-                # Skip any incomplete/empty steps
-                if not step.get("content"):
-                    continue
-                    
-                # Special handling for tool responses - make them more readable
-                if step["role"] == "tool":
-                    if "," in step["content"] and any(x in step["content"].lower() for x in ['hqla', 'billions', 'in billions']):
-                        # This is likely the raw table data
-                        cleaned_steps.append(step)
-                # Include AI responses (but not thoughts)
-                elif step["role"] == "ai" and not step["content"].lstrip().lower().startswith("thought"):
-                    # Final answer should be included
-                    cleaned_steps.append(step)
-            
-            # Combine process steps
-            process_steps_with_query.extend(cleaned_steps)
-            
-            # Display process steps (response trajectory) in a toggle/expander
-            if process_steps_with_query:
-                with process_placeholder.expander("🔍 **View Step-by-Step Process**", expanded=False):
-                    for idx, step in enumerate(process_steps_with_query):
-                        if step["role"] == "human":
-                            st.markdown(f"### 💬 User Question:")
-                            st.info(step['content'])
-                        elif step["role"] == "ai":
-                            st.markdown(f"### ✅ Final Answer:")
-                            st.success(step['content'])
-                        elif step["role"] == "tool":
-                            st.markdown(f"### 🔍 Raw Data Retrieved:")
-                            if "," in step["content"] and any(x in step["content"].lower() for x in ['hqla', 'billions']):
-                                # Display raw CSV data in a more readable format
-                                csv_lines = step["content"].strip().split('\r\n')
-                                for line in csv_lines:
-                                    st.code(line, language=None)
-                            else:
-                                st.code(step['content'], language=None)
-                        
-                        # Add separator if not the last step
-                        if idx < len(process_steps_with_query) - 1:
-                            st.divider()
-            
-            # Extract thought processes from the response
-            thoughts = []
-            for message in response.get("messages", []):
-                content = getattr(message, "content", "")
-                if isinstance(content, str) and content.lstrip().lower().startswith("thought"):
-                    thoughts.append(content)
-            
-            return response, final_text, final_tool, final_thought, process_steps_with_query
+            # Still no text? Look directly in the response
+            if not final_text and hasattr(response, "content"):
+                final_text = response.content
+                
+            # Fallback if we still have no response
+            if not final_text:
+                final_text = "I processed your request but couldn't generate a proper response. Please try again."
+                
+            return response, final_text, process_steps
         else:
             return (
                 {"error": "🚫 Agent has not been initialized."},
                 "🚫 Agent has not been initialized.",
-                "",
-                "",
-                [],
+                []
             )
     except Exception as e:
         import traceback
-        error_msg = f"❌ Error occurred during query processing: {str(e)}\n{traceback.format_exc()}"
-        return {"error": error_msg}, error_msg, "", "", []
+        error_msg = f"❌ Error occurred: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)  # Print the full error in console for debugging
+        return {"error": error_msg}, error_msg, []
 
 async def initialize_session():
     """
@@ -585,54 +429,49 @@ if user_query:
     if st.session_state.session_initialized:
         st.chat_message("user", avatar="🧑‍💻").markdown(user_query)
         
-        # Create separate containers for different message types
+        # Use only a single container
         assistant_container = st.chat_message("assistant", avatar="🤖")
         with assistant_container:
-            tool_placeholder = st.empty()
             text_placeholder = st.empty()
-            process_placeholder = st.empty()  # New placeholder for process toggle
+            process_placeholder = st.empty()  # New placeholder for process display
         
-        # Create separate thought container (not nested) but hidden
-        # We'll track thoughts but not display them to users
-        thought_container = st.empty()  # Changed from st.chat_message to st.empty()
-        thought_placeholder = st.empty()
-        
-        # Process the query
-        resp, final_text, final_tool, final_thought, process_steps = (
-            st.session_state.event_loop.run_until_complete(
-                process_query(
-                    user_query,
-                    text_placeholder,
-                    tool_placeholder,
-                    thought_placeholder,
-                    process_placeholder,
-                    st.session_state.timeout_seconds,
-                )
+        # Simplified process_query call
+        resp, final_text, process_steps = st.session_state.event_loop.run_until_complete(
+            process_query(
+                user_query,
+                text_placeholder,
+                st.session_state.timeout_seconds,
             )
         )
         
         if "error" in resp:
             st.error(resp["error"])
         else:
+            # Store in history
             st.session_state.history.append({"role": "user", "content": user_query})
+            st.session_state.history.append({"role": "assistant", "content": final_text})
             
             # Store process steps in session state for this message
-            message_id = len(st.session_state.history)
+            message_id = len(st.session_state.history) - 1  # Index of the assistant message
             st.session_state[f"process_steps_{message_id}"] = process_steps
             
-            # Add assistant response to history
-            st.session_state.history.append(
-                {"role": "assistant", "content": final_text}
-            )
-            
-            # Add tool information to history if present
-            if final_tool.strip():
-                st.session_state.history.append(
-                    {"role": "assistant_tool", "content": final_tool}
-                )
+            # Display process steps (optional, can remove if you want to rely only on print_message)
+            with process_placeholder.expander("🔍 **View Step-by-Step Process**", expanded=False):
+                for idx, step in enumerate(process_steps):
+                    if step["role"] == "human":
+                        st.markdown(f"### 💬 User Question:")
+                        st.info(step['content'])
+                    elif step["role"] == "ai":
+                        st.markdown(f"### ✅ Final Answer:")
+                        st.success(step['content'])
+                    elif step["role"] == "tool":
+                        st.markdown(f"### 🔍 Raw Data Retrieved:")
+                        st.code(step['content'], language=None)
+                    
+                    # Add separator if not the last step
+                    if idx < len(process_steps) - 1:
+                        st.divider()
             
             st.rerun()
     else:
-        st.warning(
-            "⚠️ Agent is not initialized. Please click the 'Initialize Agent' button in the left sidebar to initialize."
-        ) 
+        st.warning("⚠️ Agent is not initialized. Please click the 'Initialize Agent' button in the left sidebar first.") 
