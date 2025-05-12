@@ -26,6 +26,70 @@ from langchain_core.runnables import RunnableConfig
 # Load environment variables
 _ = load_dotenv(find_dotenv())
 
+# Helper function to display process steps (to avoid code duplication)
+def display_process_steps(process_steps):
+    for idx, step in enumerate(process_steps):
+        if step["role"] == "human":
+            st.markdown(f"### 👤 User:")
+            st.info(step['content'])
+        elif step["role"] == "ai":
+            st.markdown(f"### 🤖 Assistant:")
+            st.success(step['content'])
+        elif step["role"] == "tool":
+            st.markdown(f"### 🔧 Tool Result:")
+            # Try to format tool output in a more readable way
+            content = step['content'].strip()
+            try:
+                # First, try explicit JSON parsing
+                if (content.startswith("{") and content.endswith("}")) or (content.startswith("[") and content.endswith("]")):
+                    try:
+                        json_content = json.loads(content)
+                        st.json(json_content)
+                    except json.JSONDecodeError:
+                        # If JSON parsing fails, display as code
+                        st.code(content, language=None)
+                else:
+                    # Check if it looks like an error message
+                    if "ERROR" in content and "{" in content and "}" in content:
+                        # Try to extract just the JSON part
+                        try:
+                            # Find JSON-like parts and try to parse them
+                            start_idx = content.find("{")
+                            end_idx = content.rfind("}") + 1
+                            if start_idx >= 0 and end_idx > start_idx:
+                                json_str = content[start_idx:end_idx]
+                                # Try to parse and display as JSON
+                                json_content = json.loads(json_str)
+                                st.error(f"Error: {json_content.get('message', 'Unknown error')}")
+                                # Still show the full content as code
+                                st.code(content, language=None)
+                            else:
+                                st.code(content, language=None)
+                        except:
+                            # If extraction fails, just show as code
+                            st.code(content, language=None)
+                    else:
+                        # Regular output as code
+                        st.code(content, language=None)
+            except Exception as e:
+                # Fallback for any unexpected errors
+                st.warning(f"Error displaying result: {str(e)}")
+                st.code(step['content'], language=None)
+        elif step["role"] == "action":
+            st.markdown(f"### 🛠️ Tool Call:")
+            st.warning(step['content'])
+        elif step["role"] == "thought":
+            st.markdown(f"### 💭 Thinking Process:")
+            st.info(step['content'])
+        else:
+            # Handle any other step types
+            st.markdown(f"### ℹ️ {step['role'].capitalize()}:")
+            st.text(step['content'])
+        
+        # Add separator if not the last step
+        if idx < len(process_steps) - 1:
+            st.divider()
+
 # Initialize session state
 if "session_initialized" not in st.session_state:
     st.session_state.session_initialized = False  # Session initialization flag
@@ -46,11 +110,33 @@ async def cleanup_mcp_client():
     """
     if "mcp_client" in st.session_state and st.session_state.mcp_client is not None:
         try:
+            # Properly close any pending generators
+            client = st.session_state.mcp_client
+            
+            # Get all generators and close them explicitly
+            if hasattr(client, "_clients"):
+                for server_name, server_client in client._clients.items():
+                    if hasattr(server_client, "_generators"):
+                        for gen in server_client._generators:
+                            try:
+                                if hasattr(gen, "aclose"):
+                                    await gen.aclose()
+                            except Exception as e:
+                                print(f"Error closing generator in {server_name}: {e}")
+            
+            # Now try to exit the client properly
             await st.session_state.mcp_client.__aexit__(None, None, None)
             st.session_state.mcp_client = None
+            
+            # Force garbage collection to clean up any remaining references
+            import gc
+            gc.collect()
+            
+            print("MCP client successfully cleaned up")
         except Exception as e:
             import traceback
-            pass
+            print(f"Error during MCP client cleanup: {e}")
+            print(traceback.format_exc())
 
 def print_message():
     """
@@ -65,25 +151,19 @@ def print_message():
                 st.markdown(message["content"])
                 
                 # Check if we have process steps for this message
-                process_key = f"process_steps_{i}"
-                if process_key in st.session_state and st.session_state[process_key]:
-                    process_steps = st.session_state[process_key]
+                if "process_key" in message and message["process_key"] in st.session_state:
+                    process_steps = st.session_state[message["process_key"]]
                     # Show process steps in expander
                     with st.expander("🔍 **View Step-by-Step Process**", expanded=False):
-                        for idx, step in enumerate(process_steps):
-                            if step["role"] == "human":
-                                st.markdown(f"### 💬 User Question:")
-                                st.info(step['content'])
-                            elif step["role"] == "ai":
-                                st.markdown(f"### ✅ Final Answer:")
-                                st.success(step['content'])
-                            elif step["role"] == "tool":
-                                st.markdown(f"### 🔍 Raw Data Retrieved:")
-                                st.code(step['content'], language=None)
-                            
-                            # Add separator if not the last step
-                            if idx < len(process_steps) - 1:
-                                st.divider()
+                        # Display process steps
+                        display_process_steps(process_steps)
+                # For backward compatibility with old messages
+                elif f"process_steps_{i}" in st.session_state:  
+                    process_steps = st.session_state[f"process_steps_{i}"]
+                    # Show process steps in expander
+                    with st.expander("🔍 **View Step-by-Step Process**", expanded=False):
+                        # Display process steps
+                        display_process_steps(process_steps)
 
 def get_streaming_callback(text_placeholder):
     accumulated_text = []
@@ -122,23 +202,39 @@ async def astream_graph(agent, input_dict, callback_tuple, config):
     # Unpack the callback tuple
     callback_func, accumulated_text = callback_tuple
     
+    # Get the trace from the agent (to capture all intermediate steps)
     result = await agent.ainvoke(
         input_dict,
-        config={**config, "return_messages": True}
+        config={
+            **config, 
+            "return_messages": True,
+            "recursion_limit": st.session_state.recursion_limit,
+            "configurable": {"thread_id": st.session_state.thread_id},
+        }
     )
     
     # Debug: Print result structure
     print(f"Agent result structure: {type(result)}")
     if isinstance(result, dict):
         print(f"Result keys: {result.keys()}")
+        for key in result.keys():
+            print(f"Key: {key}, Type: {type(result[key])}")
+            
         if "messages" in result:
             print(f"Messages type: {type(result['messages'])}")
             print(f"Messages count: {len(result['messages'])}")
+            for i, msg in enumerate(result['messages']):
+                print(f"Message {i}: Type={type(msg)}, Role={getattr(msg, 'role', 'unknown')}")
+                
+        if "intermediate_steps" in result:
+            print(f"Intermediate steps count: {len(result['intermediate_steps'])}")
+            for i, step in enumerate(result['intermediate_steps']):
+                print(f"Step {i}: Type={type(step)}, Has action={hasattr(step, 'action')}, Has observation={hasattr(step, 'observation')}")
     
     # Process each message in the trace
     final_answer = ""
     
-    # Collect process steps
+    # Collect process steps - ensure this is completely reset for each query
     process_steps = []
     
     # Add the initial question
@@ -151,45 +247,163 @@ async def astream_graph(agent, input_dict, callback_tuple, config):
                 "content": query_msg.content
             })
     
-    if isinstance(result, dict) and "messages" in result:
-        for message in result["messages"]:
-            role = getattr(message, "role", getattr(message, "type", "assistant"))
-            content = getattr(message, "content", str(message))
-            
-            # Skip empty messages
-            if not content:
-                continue
-                
-            # Store final answer (last assistant message)
-            if role == "assistant" and isinstance(content, str):
-                final_answer = content
-                # Add to process steps if it's meaningful
-                if content.strip():
+    # Extract intermediate steps from the ReAct agent
+    if isinstance(result, dict):
+        # Check if we have a full trace available
+        if "intermediate_steps" in result:
+            for step in result["intermediate_steps"]:
+                # Extract action step (thought + action)
+                if hasattr(step, "action") and step.action:
+                    action_str = f"Action: {step.action.tool}\nAction Input: {step.action.tool_input}"
                     process_steps.append({
-                        "role": "ai",
+                        "role": "action",
+                        "content": action_str
+                    })
+                
+                # Extract observation step (tool output)
+                if hasattr(step, "observation"):
+                    process_steps.append({
+                        "role": "tool",
+                        "content": str(step.observation)
+                    })
+                    
+        # Process final messages
+        if "messages" in result:
+            for message in result["messages"]:
+                role = getattr(message, "role", getattr(message, "type", "assistant"))
+                content = getattr(message, "content", str(message))
+                
+                # Skip empty messages
+                if not content:
+                    continue
+                
+                # Try to extract thought and action from assistant messages
+                if role == "assistant" and isinstance(content, str):
+                    # Check for ReAct format in assistant messages
+                    if "Thought:" in content and "Action:" in content:
+                        # Extract thought
+                        thought_section = content.split("Action:")[0]
+                        if "Thought:" in thought_section:
+                            thought_content = thought_section.split("Thought:")[1].strip()
+                            if thought_content:
+                                process_steps.append({
+                                    "role": "thought",
+                                    "content": thought_content
+                                })
+                        
+                        # Extract action
+                        if "Action:" in content and "Action Input:" in content:
+                            try:
+                                action_part = content.split("Action:")[1].split("Action Input:")[0].strip()
+                                action_input_parts = content.split("Action Input:")
+                                if len(action_input_parts) > 1:
+                                    input_part = action_input_parts[1].strip()
+                                    process_steps.append({
+                                        "role": "action",
+                                        "content": f"Action: {action_part}\nAction Input: {input_part}"
+                                    })
+                            except Exception as e:
+                                print(f"Error parsing action: {e}")
+                    
+                    # Store final answer (last assistant message)
+                    final_answer = content
+                    # Add to process steps if it's meaningful and doesn't look like a ReAct format message
+                    if content.strip() and not ("Thought:" in content or "Action:" in content):
+                        process_steps.append({
+                            "role": "ai",
+                            "content": content
+                        })
+                
+                # Store tool responses that weren't already captured
+                if role == "tool" and isinstance(content, str):
+                    # Check if this tool message is already in process_steps to avoid duplication
+                    is_duplicate = False
+                    for step in process_steps:
+                        if step["role"] == "tool" and step["content"] == content:
+                            is_duplicate = True
+                            break
+                    
+                    if not is_duplicate:
+                        process_steps.append({
+                            "role": "tool",
+                            "content": content
+                        })
+                
+                # Extract observations from ReAct format
+                if role == "assistant" and isinstance(content, str) and "Observation:" in content:
+                    observation_parts = content.split("Observation:")
+                    if len(observation_parts) > 1:
+                        observation = observation_parts[1].strip()
+                        # Stop at the next section if it exists
+                        for marker in ["Thought:", "Action:"]:
+                            if marker in observation:
+                                observation = observation.split(marker)[0].strip()
+                        
+                        if observation:
+                            is_duplicate = False
+                            for step in process_steps:
+                                if step["role"] == "tool" and step["content"] == observation:
+                                    is_duplicate = True
+                                    break
+                            
+                            if not is_duplicate:
+                                process_steps.append({
+                                    "role": "tool",
+                                    "content": observation
+                                })
+                
+                # Other message types (like "system" or custom types)
+                if role not in ["assistant", "tool", "human"] and isinstance(content, str):
+                    process_steps.append({
+                        "role": role,
                         "content": content
                     })
-            
-            # Store tool responses in process steps
-            if role == "tool" and isinstance(content, str):
-                process_steps.append({
-                    "role": "tool",
-                    "content": content
-                })
+                    
+                # Create a dict structure that matches the expected callback format
+                message_dict = {"content": message}
+                callback_func(message_dict)  # Use callback_func here, not the tuple
                 
-            # Create a dict structure that matches the expected callback format
-            message_dict = {"content": message}
-            callback_func(message_dict)  # Use callback_func here, not the tuple
-            
-            # Add small delay to make streaming look natural
-            await asyncio.sleep(0.05)
+                # Add small delay to make streaming look natural
+                await asyncio.sleep(0.05)
     
     # If we have a final answer but the callback didn't process it correctly,
     # force update the text placeholder through the accumulated_text
     if final_answer and not "".join(accumulated_text):  # If accumulated_text is empty
         accumulated_text.append(final_answer)
     
-    # Return result and process steps
+    # Sort process steps into a logical order
+    if process_steps:
+        # Define role priority (lower value = appears earlier)
+        role_priority = {
+            "human": 0,     # User question appears first
+            "thought": 1,   # Thinking process appears next 
+            "action": 2,    # Tool selection comes after thought
+            "tool": 3,      # Tool output comes after action
+            "ai": 4,        # Final answer appears last
+        }
+        
+        # Create a key for sorting based on role priority and order of appearance
+        def get_step_sort_key(idx, step):
+            role = step["role"]
+            # Get priority from the map, default to 99 for unknown roles
+            priority = role_priority.get(role, 99)
+            # Return tuple of (priority, original_index) to maintain original order for same priority
+            return (priority, idx)
+        
+        # Sort process steps while preserving their order within the same role
+        process_steps_with_idx = [(idx, step) for idx, step in enumerate(process_steps)]
+        process_steps_with_idx.sort(key=lambda x: get_step_sort_key(*x))
+        process_steps = [step for _, step in process_steps_with_idx]
+    else:
+        # If no detailed steps were extracted, at least include the initial question and final answer
+        if final_answer:
+            # User question should already be in process_steps from earlier in the function
+            process_steps.append({
+                "role": "ai",
+                "content": final_answer
+            })
+            print("Warning: No detailed intermediate steps were captured. Only showing question and answer.")
+    
     return result, process_steps
 
 async def process_query(query, text_placeholder, timeout_seconds=60):
@@ -206,6 +420,10 @@ async def process_query(query, text_placeholder, timeout_seconds=60):
                 
                 # Debug: Print input structure
                 print(f"Query input: {query_msg}")
+                
+                # Reset thread_id for a completely new conversation context
+                # This ensures process steps don't accumulate between queries
+                st.session_state.thread_id = "thread_" + str(hash(os.urandom(16)))
                 
                 response, process_steps = await asyncio.wait_for(
                     astream_graph(
@@ -338,7 +556,7 @@ st.markdown("""
 
 **Example questions you can ask:**
 - "What was the hqla in the q4 of Citigroup in 2015?"
-- "What is the aggregate rent expense of American Tower Corp in 2014?"
+- "in 2011 what was the SL Green Realty Corp's percent of the change in the account balance at end of year"
 - "What is the long-term component of BlackRock at 12/31/2011?"
 """)
 
@@ -408,6 +626,9 @@ with st.sidebar:
         # Reset conversation history
         st.session_state.history = []
         
+        # Cleanup MCP client properly
+        st.session_state.event_loop.run_until_complete(cleanup_mcp_client())
+        
         # Notification message
         st.success("✅ Conversation has been reset.")
         
@@ -453,24 +674,15 @@ if user_query:
             
             # Store process steps in session state for this message
             message_id = len(st.session_state.history) - 1  # Index of the assistant message
-            st.session_state[f"process_steps_{message_id}"] = process_steps
+            process_key = f"process_steps_{st.session_state.thread_id}_{message_id}"
+            st.session_state[process_key] = process_steps
+            
+            # Update the process_key in the history for reference
+            st.session_state.history[-1]["process_key"] = process_key
             
             # Display process steps (optional, can remove if you want to rely only on print_message)
             with process_placeholder.expander("🔍 **View Step-by-Step Process**", expanded=False):
-                for idx, step in enumerate(process_steps):
-                    if step["role"] == "human":
-                        st.markdown(f"### 💬 User Question:")
-                        st.info(step['content'])
-                    elif step["role"] == "ai":
-                        st.markdown(f"### ✅ Final Answer:")
-                        st.success(step['content'])
-                    elif step["role"] == "tool":
-                        st.markdown(f"### 🔍 Raw Data Retrieved:")
-                        st.code(step['content'], language=None)
-                    
-                    # Add separator if not the last step
-                    if idx < len(process_steps) - 1:
-                        st.divider()
+                display_process_steps(process_steps)
             
             st.rerun()
     else:
