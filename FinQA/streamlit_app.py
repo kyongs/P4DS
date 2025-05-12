@@ -4,6 +4,8 @@ import nest_asyncio
 import json
 import os
 from dotenv import load_dotenv, find_dotenv
+import pandas as pd
+import atexit
 
 # Apply nest_asyncio: Allow nested calls within an already running event loop
 nest_asyncio.apply()
@@ -28,6 +30,7 @@ _ = load_dotenv(find_dotenv())
 
 # Helper function to display process steps (to avoid code duplication)
 def display_process_steps(process_steps):
+    # Use columns to organize content types
     for idx, step in enumerate(process_steps):
         if step["role"] == "human":
             st.markdown(f"### 👤 User:")
@@ -38,9 +41,9 @@ def display_process_steps(process_steps):
         elif step["role"] == "tool":
             st.markdown(f"### 🔧 Tool Result:")
             # Try to format tool output in a more readable way
-            content = step['content'].strip()
             try:
-                # First, try explicit JSON parsing
+                # Check if it's valid JSON
+                content = step['content'].strip()
                 if (content.startswith("{") and content.endswith("}")) or (content.startswith("[") and content.endswith("]")):
                     try:
                         json_content = json.loads(content)
@@ -102,6 +105,22 @@ if "session_initialized" not in st.session_state:
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = "thread_" + str(hash(os.urandom(16)))
 
+# Register cleanup handler for Streamlit session end
+def cleanup_on_app_close():
+    """Cleans up resources when the Streamlit app is closing."""
+    if "event_loop" in st.session_state and "mcp_client" in st.session_state and st.session_state.mcp_client is not None:
+        try:
+            st.session_state.event_loop.run_until_complete(cleanup_mcp_client())
+        except Exception as e:
+            print(f"Error during shutdown cleanup: {e}")
+            # Force cleanup
+            st.session_state.mcp_client = None
+            
+    print("Application cleanup completed")
+
+# Register the cleanup handler
+atexit.register(cleanup_on_app_close)
+
 # --- Function Definitions ---
 
 async def cleanup_mcp_client():
@@ -113,30 +132,40 @@ async def cleanup_mcp_client():
             # Properly close any pending generators
             client = st.session_state.mcp_client
             
-            # Get all generators and close them explicitly
-            if hasattr(client, "_clients"):
-                for server_name, server_client in client._clients.items():
-                    if hasattr(server_client, "_generators"):
-                        for gen in server_client._generators:
-                            try:
-                                if hasattr(gen, "aclose"):
-                                    await gen.aclose()
-                            except Exception as e:
-                                print(f"Error closing generator in {server_name}: {e}")
+            # Store reference to exit stack for explicit closing
+            if hasattr(client, "exit_stack"):
+                try:
+                    await client.exit_stack.aclose()
+                    print("Successfully closed client exit stack")
+                except Exception as e:
+                    print(f"Error closing exit stack: {e}")
             
-            # Now try to exit the client properly
-            await st.session_state.mcp_client.__aexit__(None, None, None)
-            st.session_state.mcp_client = None
+            # Close all sessions if they exist
+            if hasattr(client, "sessions"):
+                for server_name, session in client.sessions.items():
+                    try:
+                        if hasattr(session, "close"):
+                            await session.close()
+                        print(f"Closed session for {server_name}")
+                    except Exception as e:
+                        print(f"Error closing session {server_name}: {e}")
             
-            # Force garbage collection to clean up any remaining references
-            import gc
-            gc.collect()
-            
-            print("MCP client successfully cleaned up")
+            # Now try to exit the client properly using a try-finally block
+            try:
+                await st.session_state.mcp_client.__aexit__(None, None, None)
+            finally:
+                st.session_state.mcp_client = None
+                # Force garbage collection to clean up any remaining references
+                import gc
+                gc.collect()
+                print("MCP client successfully cleaned up")
         except Exception as e:
             import traceback
             print(f"Error during MCP client cleanup: {e}")
             print(traceback.format_exc())
+            
+            # As a last resort, just set to None to allow garbage collection
+            st.session_state.mcp_client = None
 
 def print_message():
     """
@@ -153,15 +182,33 @@ def print_message():
                 # Check if we have process steps for this message
                 if "process_key" in message and message["process_key"] in st.session_state:
                     process_steps = st.session_state[message["process_key"]]
-                    # Show process steps in expander
-                    with st.expander("🔍 **View Step-by-Step Process**", expanded=False):
+                    # Show process steps in expander - avoid nesting expanders when display_process_steps is called
+                    if st.button("🔍 **View Step-by-Step Process**", key=f"process_btn_{i}"):
+                        st.session_state[f"show_process_{i}"] = True
+                    
+                    # Display the process steps if button was clicked
+                    if f"show_process_{i}" in st.session_state and st.session_state[f"show_process_{i}"]:
+                        # Clear button
+                        if st.button("Hide Details", key=f"hide_process_{i}"):
+                            st.session_state[f"show_process_{i}"] = False
+                            st.rerun()
+                        
                         # Display process steps
                         display_process_steps(process_steps)
                 # For backward compatibility with old messages
                 elif f"process_steps_{i}" in st.session_state:  
                     process_steps = st.session_state[f"process_steps_{i}"]
-                    # Show process steps in expander
-                    with st.expander("🔍 **View Step-by-Step Process**", expanded=False):
+                    # Show process steps with button instead of expander
+                    if st.button("🔍 **View Step-by-Step Process**", key=f"old_process_btn_{i}"):
+                        st.session_state[f"show_old_process_{i}"] = True
+                    
+                    # Display the process steps if button was clicked
+                    if f"show_old_process_{i}" in st.session_state and st.session_state[f"show_old_process_{i}"]:
+                        # Clear button
+                        if st.button("Hide Details", key=f"hide_old_process_{i}"):
+                            st.session_state[f"show_old_process_{i}"] = False
+                            st.rerun()
+                        
                         # Display process steps
                         display_process_steps(process_steps)
 
@@ -500,31 +547,101 @@ async def initialize_session():
         st.session_state.tool_names = []
         st.session_state.tools_info = []
         
-        # Group tools by server
+        # Group tools by server - using the server_name_to_tools dict if available
         tool_servers = {}
-        for tool in tools:
-            # Extract server name from tool name (before the dot)
-            if "." in tool.name:
-                server_name = tool.name.split(".")[0]
-                if server_name not in tool_servers:
-                    tool_servers[server_name] = []
-                tool_servers[server_name].append(tool.name)
-            else:
-                if "unknown" not in tool_servers:
-                    tool_servers["unknown"] = []
-                tool_servers["unknown"].append(tool.name)
-            
-            # Store tool name
-            st.session_state.tool_names.append(tool.name)
-            # Store detailed tool info
-            st.session_state.tools_info.append(f"Tool: {tool.name} - {tool.description}")
         
-        # Store server summary
-        st.session_state.server_summary = []
-        for server, tool_list in tool_servers.items():
-            st.session_state.server_summary.append(f"Server: {server} - {len(tool_list)} tools")
-            for tool_name in tool_list:
-                st.session_state.server_summary.append(f"  - {tool_name}")
+        # Try to get server names directly from the client if possible
+        try:
+            if hasattr(client, "server_name_to_tools"):
+                # Direct access to server_name_to_tools mapping
+                print("Found server_name_to_tools attribute in client")
+                server_tool_mapping = client.server_name_to_tools
+                
+                # Create tool servers map from the client's own mapping
+                for server_name, server_tools in server_tool_mapping.items():
+                    # Initialize each server group
+                    tool_servers[server_name] = []
+                    
+                    # Process each tool in this server's tools
+                    for tool in server_tools:
+                        # Store basic info for all tools
+                        st.session_state.tool_names.append(tool.name)
+                        st.session_state.tools_info.append(f"Tool: {tool.name} - {tool.description}")
+                        
+                        # Add to the server group
+                        tool_servers[server_name].append({
+                            "name": tool.name,
+                            "full_name": tool.name,
+                            "description": tool.description
+                        })
+                
+                # Debug info
+                print(f"Found {len(server_tool_mapping)} servers from client mapping")
+                for server, s_tools in server_tool_mapping.items():
+                    print(f"  Server '{server}' has {len(s_tools)} tools: {[t.name for t in s_tools]}")
+                
+                # If we have server_name_to_tools, we've already processed all tools
+                # No need for further processing
+                print("Using server_name_to_tools for tool mapping")
+            else:
+                # Fallback to server name extraction
+                raise AttributeError("No server_name_to_tools attribute found")
+        except (AttributeError, Exception) as e:
+            # Fallback method if direct access fails
+            print(f"Falling back to name-based server detection: {str(e)}")
+            
+            # Server names from the MCP client initialization
+            # These match the keys in the client initialization dictionary
+            server_names = ["chroma", "fin", "math", "sqlite"]
+            print(f"Expected servers: {server_names}")
+            
+            # Initialize server groups
+            for server_name in server_names:
+                tool_servers[server_name] = []
+            
+            # Add unknown category for any unmatched tools
+            if "unknown" not in tool_servers:
+                tool_servers["unknown"] = []
+            
+            # Categorize tools by server using name prefixes
+            for tool in tools:
+                # Add to tool names list
+                st.session_state.tool_names.append(tool.name)
+                
+                # Use server prefix in tool name to identify the server
+                matched_server = False
+                for server_name in server_names:
+                    # Check if tool name starts with server prefix (e.g., "fin.")
+                    if tool.name.startswith(f"{server_name}."):
+                        # Extract the tool name without the server prefix
+                        tool_name = tool.name.split(".", 1)[1]
+                        # Add to the appropriate server group
+                        tool_servers[server_name].append({
+                            "name": tool_name,
+                            "full_name": tool.name,
+                            "description": tool.description
+                        })
+                        matched_server = True
+                        break
+                
+                # If no server prefix was found, add to unknown
+                if not matched_server:
+                    tool_servers["unknown"].append({
+                        "name": tool.name,
+                        "full_name": tool.name,
+                        "description": tool.description
+                    })
+                
+                # Store detailed tool info
+                st.session_state.tools_info.append(f"Tool: {tool.name} - {tool.description}")
+        
+        # Print debug info about tool categorization
+        print(f"Final server grouping results: {[server for server in tool_servers.keys()]}")
+        for server, tools_list in tool_servers.items():
+            print(f"Server '{server}' has {len(tools_list)} tools: {[t['name'] for t in tools_list]}")
+        
+        # Store server summary in a more structured way
+        st.session_state.server_tools = tool_servers
         
         st.session_state.mcp_client = client
 
@@ -556,7 +673,7 @@ st.markdown("""
 
 **Example questions you can ask:**
 - "What was the hqla in the q4 of Citigroup in 2015?"
-- "in 2011 what was the SL Green Realty Corp's percent of the change in the account balance at end of year"
+- "In 2011 what was the SL Green Realty Corp's percent of the change in the account balance at end of year"
 - "What is the long-term component of BlackRock at 12/31/2011?"
 """)
 
@@ -593,10 +710,73 @@ with st.sidebar:
     st.write("🧠 Current Model: gpt-4o-mini")
     
     # Add server summary
-    if st.session_state.session_initialized and "server_summary" in st.session_state:
-        with st.expander("MCP Servers & Tools", expanded=True):
-            for line in st.session_state.server_summary:
-                st.write(line)
+    if st.session_state.session_initialized and "server_tools" in st.session_state:
+        st.subheader("🔌 Available MCP Servers & Tools")
+        
+        # Server icon and description mapping for better UI
+        server_icons = {
+            "chroma": "🔍",   # Search/retrieval
+            "fin": "💰",      # Finance
+            "math": "🧮",     # Math
+            "sqlite": "🗃️",   # Database
+            "unknown": "🔧"   # Unknown tools
+        }
+        
+        # Display summary as compact badges
+        summary_cols = st.columns([1, 1])
+        with summary_cols[0]:
+            # Count total number of available tools
+            total_tool_count = sum(len(tools) for tools in st.session_state.server_tools.values())
+            st.markdown(f"**Tools**: {total_tool_count}")
+            
+        with summary_cols[1]:
+            # Get count of active servers
+            non_empty_servers = [s for s in st.session_state.server_tools.keys() 
+                              if s in st.session_state.server_tools and len(st.session_state.server_tools[s]) > 0]
+            st.markdown(f"**Servers**: {len(non_empty_servers)}")
+        
+        # Create simpler UI with cleaner tool display
+        for server_name in ["chroma", "fin", "math", "sqlite", "unknown"]:
+            # Skip if server doesn't exist in our data
+            if server_name not in st.session_state.server_tools:
+                continue
+                
+            tools = st.session_state.server_tools[server_name]
+            if len(tools) == 0:
+                continue  # Skip empty servers
+                
+            # Get icon
+            icon = server_icons.get(server_name, "🔧")
+            
+            # Create expander with server info
+            with st.expander(f"{icon} {server_name.capitalize()} Server ({len(tools)} tools)", expanded=True):
+                # Sort tools by name
+                sorted_tools = sorted(tools, key=lambda x: x["name"])
+                
+                # Create a simple markdown list
+                tool_list = []
+                for tool in sorted_tools:
+                    tool_list.append(f"• **{tool['name']}**")
+                
+                # Join with line breaks and display
+                st.markdown("  \n".join(tool_list))
+                
+                # Add button for viewing full details
+                if st.button(f"View Documentation", key=f"full_{server_name}"):
+                    st.session_state[f"show_full_{server_name}"] = True
+                
+                # Show full details with examples and full descriptions
+                if f"show_full_{server_name}" in st.session_state and st.session_state[f"show_full_{server_name}"]:
+                    st.markdown("### Tool Documentation")
+                    for tool in sorted_tools:
+                        st.markdown(f"#### {tool['name']}")
+                        st.markdown(f"{tool['description']}")
+                        st.divider()
+                    
+                    # Hide button
+                    if st.button(f"Hide Documentation", key=f"hide_full_{server_name}"):
+                        st.session_state[f"show_full_{server_name}"] = False
+                        st.rerun()
     
     st.divider()  # Add divider
     
@@ -608,12 +788,19 @@ with st.sidebar:
         use_container_width=True,
     ):
         # Initialize the agent
-        success = st.session_state.event_loop.run_until_complete(initialize_session())
-        
-        if success:
-            st.success("✅ Agent has been initialized.")
-        else:
-            st.error("❌ Failed to initialize agent.")
+        try:
+            success = st.session_state.event_loop.run_until_complete(initialize_session())
+            
+            if success:
+                st.success("✅ Agent has been initialized.")
+            else:
+                st.error("❌ Failed to initialize agent.")
+        except Exception as e:
+            import traceback
+            error_traceback = traceback.format_exc()
+            st.error(f"❌ Error during initialization: {str(e)}")
+            st.expander("Technical Details", expanded=False).code(error_traceback)
+            print(f"Initialization error: {str(e)}\n{error_traceback}")
         
         # Refresh page
         st.rerun()
@@ -626,8 +813,19 @@ with st.sidebar:
         # Reset conversation history
         st.session_state.history = []
         
-        # Cleanup MCP client properly
-        st.session_state.event_loop.run_until_complete(cleanup_mcp_client())
+        # Safely cleanup MCP client with error handling
+        try:
+            st.session_state.event_loop.run_until_complete(cleanup_mcp_client())
+        except Exception as e:
+            print(f"Error during MCP client cleanup on reset: {e}")
+            
+            # Force cleanup if event loop fails
+            if "mcp_client" in st.session_state:
+                st.session_state.mcp_client = None
+                
+            # Force garbage collection
+            import gc
+            gc.collect()
         
         # Notification message
         st.success("✅ Conversation has been reset.")
@@ -681,8 +879,19 @@ if user_query:
             st.session_state.history[-1]["process_key"] = process_key
             
             # Display process steps (optional, can remove if you want to rely only on print_message)
-            with process_placeholder.expander("🔍 **View Step-by-Step Process**", expanded=False):
-                display_process_steps(process_steps)
+            with process_placeholder:
+                if st.button("🔍 **View Step-by-Step Process**", key=f"inline_process"):
+                    st.session_state["show_inline_process"] = True
+                
+                # Display the process steps if button was clicked
+                if "show_inline_process" in st.session_state and st.session_state["show_inline_process"]:
+                    # Hide button
+                    if st.button("Hide Details", key="hide_inline_process"):
+                        st.session_state["show_inline_process"] = False
+                        st.rerun()
+                    
+                    # Display process steps
+                    display_process_steps(process_steps)
             
             st.rerun()
     else:
