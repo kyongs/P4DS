@@ -9,6 +9,8 @@ import json
 from dotenv import load_dotenv, find_dotenv
 import os
 from langchain.schema import BaseMessage 
+from langchain_core.messages import SystemMessage
+
 
 _ = load_dotenv(find_dotenv())
 
@@ -21,6 +23,7 @@ model = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 
 results_json = []          # <-- 새로 쓸 리스트
 
+
 async def async_func():
     async with MultiServerMCPClient(
         {
@@ -28,6 +31,7 @@ async def async_func():
             "fin":    {"command": "python", "args": ["./servers/fin_server.py"],    "transport": "stdio"},
             "math":   {"command": "python", "args": ["./servers/math_server.py"],   "transport": "stdio"},
             "sqlite": {"command": "python", "args": ["./servers/sqlite_server.py"], "transport": "stdio"},
+            # "google": {"command": "python", "args": ["./servers/google_search_server.py"], "transport": "stdio"},
         }
     ) as client:
 
@@ -35,8 +39,8 @@ async def async_func():
             agent = create_react_agent(model, client.get_tools())
             # ⭑ invoke 시 intermediate 메시지까지 돌려받게 함
             result = await agent.ainvoke(
-                {"messages": q["Question"]},
-                config={"recursion_limit": 50, "return_messages": True}
+                {"messages": f"{q['Question']}.\n You are a financial QA assistant. Think step by step before answering. Use available tools to answer precisely and cite tool calls when needed. "},
+                config={"recursion_limit": 30, "return_messages": True}
             )
 
             # --- 1) 전체 과정(trace) 정리 -------------
