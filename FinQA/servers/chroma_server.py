@@ -12,8 +12,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # 벡터스토어 초기화
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 docsearch = Chroma(
-    persist_directory="./data/test_db",
-    embedding_function=embeddings
+    persist_directory="./data/test_db_0521",
+    embedding_function=embeddings,
+    collection_name="finqa",
 )
 
 # ── 메타데이터 로드 (company·fiscal은 metadatas 필드 안에!) ──
