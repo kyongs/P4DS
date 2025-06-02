@@ -2,24 +2,85 @@
 
 Skeleton code repository for the Topic: Financial QA - MCP with Multiple Servers
 
-**File list**
-- data
-  - test_db: Pre-built Chroma DB (Vector DB) for the test set of FinQA
-  - companies.csv: Company information data which includes stock market status
-  - companies.db: companies.csv stored in SQLite DB
-  - qa_dict.json: QA set for the accuracy test, total 50 question and answer set 
-- servers
-  - chroma_server.py: MCP server for the Chroma DB
-  - fin_server.py: MCP server for financial calculations
-  - math_server.py: MCP server for arithmetic calculations
-  - sqlite_server.py: MCP server for the SQLite DB
-- mcp_client.py: MCP client, run this code to generate result for the questions
-- score.py: Run this code for scoring the accuracy with your result 
+## 🎯 Quick Start - Automated Pipeline
 
-## References
-- https://modelcontextprotocol.io/tutorials/building-mcp-with-llms
-- https://github.com/modelcontextprotocol/python-sdk
-- https://github.com/hannesrudolph/sqlite-explorer-fastmcp-mcp-server/tree/main
+### Run Complete Pipeline
+```bash
+# Basic execution (auto-generates file names)
+./run_pipeline.sh
+
+# Custom suffix
+./run_pipeline.sh experiment1
+
+# Custom CPU usage (50%)
+./run_pipeline.sh v1 0.5
+
+# Auto suffix with custom CPU usage
+./run_pipeline.sh "" 0.8
+```
+
+### File Organization
+The pipeline automatically organizes files by date:
+- **Today's results**: `./results/v{MMDD}/results_thoughts_v{N}.json`
+- **Today's scores**: `./scores/v{MMDD}/results_with_score_v{N}.json`
+
+Example for January 3rd:
+- `./results/v0103/results_thoughts_v1.json`
+- `./scores/v0103/results_with_score_v1.json`
+
+## 📊 Individual Script Usage
+
+### Question Processing
+```bash
+# Basic usage
+python mcp_client_with_thought.py
+
+# Custom configuration
+python mcp_client_with_thought.py \
+  --input ./data/qa_dict.json \
+  --output ./results/v0103/custom_results.json \
+  --cpu-usage 0.8 \
+  --model gpt-4
+
+# Show all options
+python mcp_client_with_thought.py --help
+```
+
+### Scoring
+```bash
+# Basic usage
+python score.py
+
+# Custom configuration  
+python score.py \
+  --input-qa ./data/qa_dict_levels.json \
+  --input-results ./results/v0103/results_thoughts_v1.json \
+  --output ./scores/v0103/custom_scores.json \
+  --cpu-usage 0.8
+
+# Show all options
+python score.py --help
+```
+
+## File Structure
+
+**Data:**
+- `data/test_db`: Pre-built Chroma DB (Vector DB) for the test set of FinQA
+- `data/companies.csv`: Company information data which includes stock market status
+- `data/companies.db`: companies.csv stored in SQLite DB
+- `data/qa_dict.json`: QA set for the accuracy test, total 50 question and answer set 
+
+**Servers:**
+- `servers/chroma_server.py`: MCP server for the Chroma DB
+- `servers/fin_server.py`: MCP server for financial calculations
+- `servers/math_server.py`: MCP server for arithmetic calculations
+- `servers/sqlite_server.py`: MCP server for the SQLite DB
+
+**Main Scripts:**
+- `mcp_client_with_thought.py`: Enhanced MCP client with multiprocessing support
+- `score.py`: Enhanced scoring script with parallel evaluation
+- `run_pipeline.sh`: Automated pipeline runner
+- `mcp_client.py`: Legacy MCP client (deprecated)
 
 ## Requirements
 
@@ -29,7 +90,7 @@ uv >= 0.6.14, python >= 3.13
 
 ## Installation
 
-```
+```bash
 $ uv venv
 $ source .venv/bin/activate
 $ uv pip install -r requirements.txt
@@ -56,22 +117,13 @@ This separation allows for easier maintenance and future enhancements.
 
 To run the Streamlit web interface:
 
-```
-$ streamlit run streamlit_app.py
+```bash
+$ streamlit run app/streamlit_app.py
 ```
 
 This will launch a web server. Open your browser and navigate to `http://localhost:8501` to access the interface.
 
-## Run MCP Client and Get Accuracy
-
-To run the batch processing and accuracy evaluation:
-
-```
-$ python mcp_client.py
-$ python score.py
-```
-
-### Pre-defined Tool Examples
+## Pre-defined Tool Examples
 
 - `calculate_eps(net_income: float, outstanding_shares: int)`: Calculate the EPS of the company using net income and outstanding share
    - **Arguments**:
@@ -95,3 +147,8 @@ $ python score.py
       - fy: Fiscal year for filtering the documents
    - **Returns**:
       - A related document for the question.
+
+## References
+- https://modelcontextprotocol.io/tutorials/building-mcp-with-llms
+- https://github.com/modelcontextprotocol/python-sdk
+- https://github.com/hannesrudolph/sqlite-explorer-fastmcp-mcp-server/tree/main
