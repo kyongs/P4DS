@@ -1,0 +1,62 @@
+[
+    {
+        "question": "what was the hqla in the q4 of Citigroup in 2015",
+        "final_answer": "The HQLA for Citigroup in Q4 of 2015 was $378.5 billion.",
+        "True Answer": "378.5 billion dollars",
+        "Score": 1
+    },
+    {
+        "question": "as a result of the sales of certain non-core towers and other assets what was the recorded net losses of American Tower in 2008",
+        "final_answer": "The recorded net losses of American Tower in 2008 were approximately $10.7 million.",
+        "True Answer": "10.5 million dollars",
+        "Score": 0
+    },
+    {
+        "question": "what was the port call costsin of Royal Caribbean Cruises in 2012",
+        "final_answer": "The port call costs of Royal Caribbean Cruises in 2012 were $459.8 million.",
+        "True Answer": "459.8 million dollars",
+        "Score": 1
+    },
+    {
+        "question": "what is the aggregate rent expense of American Tower Corp in 2014?",
+        "final_answer": "The aggregate rent expense of American Tower Corp in 2014 was approximately $655.0 million.",
+        "True Answer": "655.0 million dollars",
+        "Score": 1
+    },
+    {
+        "question": "what is the long-term component of BlackRock at 12/31/2011?",
+        "final_answer": null,
+        "True Answer": "593356 million dollars",
+        "Score": 0
+    },
+    {
+        "question": "at december 31 , 2012 of The PNC Financial Services, what was the potential maximum exposure under the loss share arrangements?",
+        "final_answer": "The potential maximum exposure under the loss share arrangements for The PNC Financial Services as of December 31, 2012, was $3.9 billion.",
+        "True Answer": "3.9 billion dollars",
+        "Score": 1
+    },
+    {
+        "question": "what is the total financial liabilities at fair value of Goldman Sachs in 2012?",
+        "final_answer": "The total financial liabilities at fair value of Goldman Sachs in 2012 were $377,677 million.",
+        "True Answer": "377677 million dollars",
+        "Score": 1
+    },
+    {
+        "question": "what was brazilian paper sales of International Paper Company in 2006?",
+        "final_answer": "The Brazilian paper sales of International Paper Company in 2006 were $496 million.",
+        "True Answer": "496 million dollars",
+        "Score": 1
+    },
+    {
+        "question": "what was brazilian paper sales of International Paper Company in 2005?",
+        "final_answer": "Brazilian paper sales of International Paper Company in 2005 were $684 million.",
+        "True Answer": "465 million dollars",
+        "Score": 0
+    },
+    {
+        "question": "what is the cashflow of Kellogg in 2006?",
+        "final_answer": "I am currently unable to retrieve the cash flow data for Kellogg in 2006. Please check a financial database or Kellogg's annual report for that year for the information.",
+        "True Answer": "957.4 million dollars",
+        "Score": 0
+    }
+]

@@ -1,0 +1,72 @@
+[
+    {
+        "question": "From the perspective of 6 years ago, what percentage of total minimum lease payments of Dish Network are due in 2015?",
+        "final_answer": "I cannot determine the percentage of total minimum lease payments of Dish Network due in 2015 without the total minimum lease payments for 2023.",
+        "True Answer": "9.772%",
+        "Level": "3",
+        "Score": 0
+    },
+    {
+        "question": "in 2011 what was the SL Green Realty Corp's percent of the change in the account balance at end of year",
+        "final_answer": "6.75%",
+        "True Answer": "6.75%",
+        "Level": "3",
+        "Score": 1
+    },
+    {
+        "question": "what was the value in thousands of unvested restricted stock and performance awards at the weighted-averagegrant-datefair value as of december 31 , 2018 of Global Payments?",
+        "final_answer": "The value in thousands of unvested restricted stock and performance awards at the weighted-average grant-date fair value as of December 31, 2018, of Global Payments is approximately $117,624.84 thousand.",
+        "True Answer": "117624.84",
+        "Level": "2",
+        "Score": 1
+    },
+    {
+        "question": "based on the cash dividends paid of the year, how many common stock shares were outstanding in 2007 Snap-on?",
+        "final_answer": "Approximately 58,378,378 common stock shares were outstanding in 2007 for Snap-on.",
+        "True Answer": "58909091",
+        "Level": "2",
+        "Score": 0
+    },
+    {
+        "question": "what is the Entergy Corp's 2008 total value , in millions of dollars , of issuable long-term securities?",
+        "final_answer": "Unable to determine the total value of issuable long-term securities for Entergy Corp in 2008 based on the available data.",
+        "True Answer": "1450",
+        "Level": "2",
+        "Score": 0
+    },
+    {
+        "question": "for the capital framework of Goldman Sachs Group 8 years ago, what percent of the minimum supplementary leverage ratio consisted of a buffer?",
+        "final_answer": "The specific percentage of the minimum supplementary leverage ratio that consisted of a buffer for Goldman Sachs Group in 2015 is not available from the retrieved data.",
+        "True Answer": "40%",
+        "Level": "6",
+        "Score": 0
+    },
+    {
+        "question": "in 2007 what was the 3M's ratio of the interest expense to the interest income",
+        "final_answer": "The ratio of 3M's interest expense to interest income in 2007 was approximately -1.59.",
+        "True Answer": "1.59",
+        "Level": "2",
+        "Score": 0
+    },
+    {
+        "question": "what is the AON's decrease observed in the additions for tax positions of prior years as of 2018, in millions?",
+        "final_answer": "The decrease observed in the additions for tax positions of prior years for AON as of 2018 is $2 million.",
+        "True Answer": "2",
+        "Level": "2",
+        "Score": 1
+    },
+    {
+        "question": "In 2014 Global Payments, what is the total value of securities approved by security holders but net yer issued , ( in millions ) ?",
+        "final_answer": "The total value of securities approved by security holders but not yet issued in 2014 for Global Payments is approximately $31.32 million.",
+        "True Answer": "365.4",
+        "Level": "4",
+        "Score": 0
+    },
+    {
+        "question": "what is the percent of our network route miles that is owned rather than operated on pursuant to trackage rights or leases in 2016 Union Pacific Corp",
+        "final_answer": "approximately 81.24% of the network route miles are owned rather than operated on pursuant to trackage rights or leases.",
+        "True Answer": "81.2%",
+        "Level": "2",
+        "Score": 1
+    }
+]
