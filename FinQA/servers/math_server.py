@@ -109,6 +109,31 @@ def divide(
         raise ValueError("Divisor (b) cannot be zero.")
     return a / b
 
+@mcp.tool(
+    annotations={
+        "title": "Average of Two Values",
+        "description": (
+            "Calculate the arithmetic mean (average) of two values.\n\n"
+            "Inputs:\n"
+            "  • x (float): First value. E.g., 3.0\n"
+            "  • y (float): Second value. E.g., 5.0\n\n"
+            "Output:\n"
+            "  • float: The average (x + y) / 2. E.g., 4.0"
+        ),
+        "readOnlyHint": True,
+        "openWorldHint": False,
+        "examples": [
+            {"x": 3.0, "y": 5.0}
+        ]
+    }
+)
+def average_two_values(
+    x: Annotated[float, "First value (float). E.g., 3.0"],
+    y: Annotated[float, "Second value (float). E.g., 5.0"]
+) -> float:
+    """Calculate the average of two numbers."""
+    return (x + y) / 2
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

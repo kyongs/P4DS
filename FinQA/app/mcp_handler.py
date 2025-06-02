@@ -2,6 +2,7 @@ import asyncio
 import os
 import json
 from typing import Dict, List, Any, Tuple, Callable, Optional
+from pathlib import Path
 
 from dotenv import load_dotenv, find_dotenv
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -28,6 +29,27 @@ class MCPHandler:
         self.server_tools = {}
         self.recursion_limit = 50
         self.initialized = False
+        
+        # Calculate server paths based on current file location
+        current_file = Path(__file__).resolve()
+        app_dir = current_file.parent
+        finqa_dir = app_dir.parent
+        servers_dir = finqa_dir / "servers"
+        
+        self.server_paths = {
+            "chroma": str(servers_dir / "chroma_server.py"),
+            "fin": str(servers_dir / "fin_server.py"),
+            "math": str(servers_dir / "math_server.py"),
+            "sqlite": str(servers_dir / "sqlite_server.py"),
+        }
+        
+        # Debug: Print paths for verification
+        print(f"App directory: {app_dir}")
+        print(f"FinQA directory: {finqa_dir}")
+        print(f"Servers directory: {servers_dir}")
+        for server, path in self.server_paths.items():
+            exists = Path(path).exists()
+            print(f"Server {server}: {path} (exists: {exists})")
     
     async def cleanup_client(self):
         """Safely terminates the existing MCP client."""
@@ -77,10 +99,10 @@ class MCPHandler:
         # Initialize MultiServerMCPClient
         self.client = MultiServerMCPClient(
             {
-                "chroma": {"command": "python", "args": ["./servers/chroma_server.py"], "transport": "stdio"},
-                "fin":    {"command": "python", "args": ["./servers/fin_server.py"],    "transport": "stdio"},
-                "math":   {"command": "python", "args": ["./servers/math_server.py"],   "transport": "stdio"},
-                "sqlite": {"command": "python", "args": ["./servers/sqlite_server.py"], "transport": "stdio"},
+                "chroma": {"command": "python", "args": [self.server_paths["chroma"]], "transport": "stdio"},
+                "fin":    {"command": "python", "args": [self.server_paths["fin"]],    "transport": "stdio"},
+                "math":   {"command": "python", "args": [self.server_paths["math"]],   "transport": "stdio"},
+                "sqlite": {"command": "python", "args": [self.server_paths["sqlite"]], "transport": "stdio"},
             }
         )
         

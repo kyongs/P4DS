@@ -5,6 +5,7 @@ from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from dotenv import load_dotenv, find_dotenv
 import os
+import re
 
 _ = load_dotenv(find_dotenv())
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -12,7 +13,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # 벡터스토어 초기화
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 docsearch = Chroma(
-    persist_directory="./data/test_db_0521",
+    persist_directory="./data/test_db_0530",
     embedding_function=embeddings,
     collection_name="finqa",
 )
@@ -37,12 +38,16 @@ for meta in entries["metadatas"]:
 
 mcp = FastMCP("Chroma")
 
-@mcp.tool()
+@mcp.tool(description="Retrieve financial facts. Required arguments: question (str), ticker (str), fy (int).")
 def retrieve_factual_data(
     question: Annotated[str, "question"],
     ticker:   Annotated[str, "ticker (ex: 'AAPL')"],
     fy:       Annotated[int, "fiscal year (ex: 2020)"]
 ) -> str:
+    
+    # question이 제대로 들어오지 않은 경우
+    question = question or f"Retrieve relevant financial data for {ticker} in {fy}"
+
     # 티커 검증
     if ticker not in _valid_tickers:
         sample = sorted(_valid_tickers)[:10]
@@ -65,10 +70,11 @@ def retrieve_factual_data(
                 f"Error: No data found for '{ticker}' in fiscal year {fy}"
             )
 
+
     # 실제 검색
     retriever = docsearch.as_retriever(
         search_kwargs={
-            "k": 5,
+            "k": 10,
             "filter": {
                 "$and": [
                     {"company": {"$eq": ticker}},
@@ -79,7 +85,8 @@ def retrieve_factual_data(
     )
     results = retriever.invoke(question)
     if results:
-        return "\n\n---\n\n".join(doc.page_content for doc in results)
+        combined_text =  "\n\n---\n\n".join(doc.page_content for doc in results)
+        return combined_text
     return "No data returned. Try again with correct ticker and fiscal year."
 
 if __name__ == "__main__":
