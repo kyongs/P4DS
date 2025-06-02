@@ -6,6 +6,8 @@ from dotenv import load_dotenv, find_dotenv
 import os
 from tqdm import tqdm
 import argparse
+import multiprocessing as mp
+from functools import partial
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Score FinQA Results")
@@ -24,35 +26,18 @@ def parse_arguments():
     parser.add_argument("--temperature", "-t",
                        type=float, default=0.0,
                        help="Model temperature (default: 0.0)")
+    parser.add_argument("--cpu-usage", "-c",
+                       type=float, default=0.75,
+                       help="CPU usage percentage (0.0-1.0, default: 0.75)")
     return parser.parse_args()
 
-_ = load_dotenv(find_dotenv())
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-def main():
-    args = parse_arguments()
+def process_single_item(indexed_data, model_name, temperature, openai_api_key):
+    """Process a single question-answer pair for scoring"""
+    index, qa_item, result_item = indexed_data
     
-    llm = ChatOpenAI(model=args.model, temperature=args.temperature, api_key=OPENAI_API_KEY)
-
-    # Load data files
-    with open(args.input_qa, 'r') as f:
-        qa_dict = json.load(f)
-
-    with open(args.input_results, 'r') as f:
-        results = json.load(f)
+    # Initialize LLM for this process
+    llm = ChatOpenAI(model=model_name, temperature=temperature, api_key=openai_api_key)
     
-    print(f"Loaded {len(qa_dict)} questions from {args.input_qa}")
-    print(f"Loaded {len(results)} results from {args.input_results}")
-    
-    # Validate that the number of questions and results match
-    if len(qa_dict) != len(results):
-        print(f"Warning: Number of questions ({len(qa_dict)}) does not match number of results ({len(results)})")
-        min_len = min(len(qa_dict), len(results))
-        print(f"Using first {min_len} items for evaluation")
-        qa_dict = qa_dict[:min_len]
-        results = results[:min_len]
-
     score_answer_prompt = PromptTemplate(
         input_variables=["question", "answer", "response"],
         template="""
@@ -75,28 +60,102 @@ def main():
         score: int = Field(description="score of the response")
 
     score_answer_chain = score_answer_prompt | llm.with_structured_output(Score)
+    
+    try:
+        response = result_item['final_answer']
+        score = score_answer_chain.invoke({
+            'question': qa_item['Question'], 
+            'answer': qa_item['Answer'], 
+            'response': response
+        }).score
+        
+        # Create processed result item
+        processed_result = {}
+        
+        # Clean and restructure results (same as original logic)
+        if 'question' in result_item:
+            pass  # Don't copy it
+        if 'trace' in result_item:
+            pass  # Don't copy it
+            
+        processed_result['Question'] = qa_item['Question']
+        processed_result['System Answer'] = result_item['final_answer']
+        processed_result['True Answer'] = qa_item['Answer']
+        processed_result['Level'] = qa_item['Level']
+        processed_result['Score'] = score
+        
+        return index, score, processed_result
+        
+    except Exception as e:
+        print(f"Error processing item {index}: {e}")
+        # Return default values for failed items
+        processed_result = {
+            'Question': qa_item['Question'],
+            'System Answer': result_item.get('final_answer', 'ERROR'),
+            'True Answer': qa_item['Answer'],
+            'Level': qa_item['Level'],
+            'Score': 0  # Default to 0 for failed items
+        }
+        return index, 0, processed_result
 
+_ = load_dotenv(find_dotenv())
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+def main():
+    args = parse_arguments()
+
+    # Load data files
+    with open(args.input_qa, 'r') as f:
+        qa_dict = json.load(f)
+
+    with open(args.input_results, 'r') as f:
+        results = json.load(f)
+    
+    print(f"Loaded {len(qa_dict)} questions from {args.input_qa}")
+    print(f"Loaded {len(results)} results from {args.input_results}")
+    
+    # Validate that the number of questions and results match
+    if len(qa_dict) != len(results):
+        print(f"Warning: Number of questions ({len(qa_dict)}) does not match number of results ({len(results)})")
+        min_len = min(len(qa_dict), len(results))
+        print(f"Using first {min_len} items for evaluation")
+        qa_dict = qa_dict[:min_len]
+        results = results[:min_len]
+
+    # Calculate number of processes
+    num_processes = max(1, int(mp.cpu_count() * args.cpu_usage))
+    print(f"Using {num_processes} processes (CPU usage: {args.cpu_usage*100:.1f}%)")
+    
+    # Create indexed data for multiprocessing
+    indexed_data = [(i, qa_dict[i], results[i]) for i in range(len(qa_dict))]
+    
+    # Create partial function with fixed arguments
+    process_func = partial(
+        process_single_item,
+        model_name=args.model,
+        temperature=args.temperature,
+        openai_api_key=OPENAI_API_KEY
+    )
+    
+    # Process items in parallel
     correct = 0
-    for i, item in tqdm(enumerate(qa_dict), desc="Evaluating answers"):
-        response = results[i]['final_answer']
-        score = score_answer_chain.invoke({'question': item['Question'], 'answer': item['Answer'], 'response': response}).score
-        correct += score
-        
-        # Clean and restructure results
-        if 'question' in results[i]:
-            del(results[i]['question'])
-        if 'trace' in results[i]:
-            del(results[i]['trace'])
-        
-        results[i]['Question'] = item['Question']
-        results[i]['System Answer'] = results[i]['final_answer']
-        del(results[i]['final_answer'])
-        results[i]['True Answer'] = item['Answer']
-        results[i]['Level'] = item['Level']
-        results[i]['Score'] = score
-
+    processed_results = {}
+    
+    with mp.Pool(processes=num_processes) as pool:
+        # Use tqdm for progress tracking
+        for index, score, processed_result in tqdm(
+            pool.imap(process_func, indexed_data),
+            total=len(indexed_data),
+            desc="Evaluating answers"
+        ):
+            correct += score
+            processed_results[index] = processed_result
+    
+    # Sort results by index to maintain original order
+    final_results = [processed_results[i] for i in range(len(qa_dict))]
+    
     accuracy = correct / len(qa_dict)
-
     print(f"Accuracy: {accuracy:.4f} ({correct}/{len(qa_dict)})")
 
     # Create the output directory if it doesn't exist
@@ -106,7 +165,7 @@ def main():
 
     # Save results
     with open(args.output, 'w') as f:
-        json.dump(results, f, indent=4)
+        json.dump(final_results, f, indent=4)
         print(f"Results with scores saved to {args.output}")
 
 if __name__ == "__main__":
