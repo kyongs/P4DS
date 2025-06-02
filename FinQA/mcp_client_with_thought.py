@@ -1,20 +1,25 @@
 import asyncio
-import json
-import os
-from dotenv import load_dotenv, find_dotenv
-import sys
-import io
-import re
-from tqdm import tqdm
 import argparse
+import io
+import json
 import multiprocessing as mp
+import os
+import re
+import sys
+from datetime import datetime
 from functools import partial
+
+from dotenv import load_dotenv, find_dotenv
+from tqdm import tqdm
 
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
+_ = load_dotenv(find_dotenv())
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
 def parse_arguments():
@@ -37,15 +42,9 @@ def parse_arguments():
     return parser.parse_args()
 
 
-_ = load_dotenv(find_dotenv())
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-### Query Rewriting
-from datetime import datetime
-import re
-
 def convert_relative_years_to_absolute(question: str, current_year: int = None) -> str:
-
+    """Convert relative year expressions like '2 years ago' to absolute years"""
+    # Find years already mentioned in the question
     years_in_question = re.findall(r"\b(20\d{2})\b", question)
     if years_in_question:
         reference_year = max(map(int, years_in_question))
@@ -54,6 +53,7 @@ def convert_relative_years_to_absolute(question: str, current_year: int = None) 
     else:
         reference_year = datetime.now().year
 
+    # Find and replace "X years ago" patterns
     pattern = r"(\d+)\s+years ago"
     matches = re.findall(pattern, question, flags=re.IGNORECASE)
 
@@ -71,6 +71,7 @@ def convert_relative_years_to_absolute(question: str, current_year: int = None) 
 
 
 def wrap_tool_async(tool):
+    """Wrap MCP tools for LangChain agent compatibility"""
     async def wrapped(input_str: str):
         try:
             data = json.loads(input_str)
@@ -84,12 +85,12 @@ def wrap_tool_async(tool):
         description=f"{tool.description} (Use with JSON input string)"
     )
 
+
 def clean_trace(text: str) -> str:
+    """Clean trace logs by removing ANSI codes and extra newlines"""
     ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
     text = ansi_escape.sub('', text)
-
     text = re.sub(r'\n{3,}', '\n\n', text)
-
     return text.strip()
 
 
@@ -113,6 +114,7 @@ async def process_single_question(question_data, model_name, temperature, server
             handle_parsing_errors=True
         )
 
+        # Capture stdout for trace logging
         buffer = io.StringIO()
         original_stdout = sys.stdout
         sys.stdout = buffer
@@ -133,6 +135,7 @@ async def process_single_question(question_data, model_name, temperature, server
         trace_log = clean_trace(trace_log)
         buffer.close()
 
+        # Extract final answer from trace if needed
         final_answer_match = re.findall(r"Final Answer:\s*(.*)", trace_log)
         final_answer = final_answer_match[-1].strip() if final_answer_match else None
 

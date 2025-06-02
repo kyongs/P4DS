@@ -1,13 +1,19 @@
+import argparse
+import json
+import multiprocessing as mp
+import os
+from functools import partial
+
+from dotenv import load_dotenv, find_dotenv
+from tqdm import tqdm
+
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
-import json
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv, find_dotenv
-import os
-from tqdm import tqdm
-import argparse
-import multiprocessing as mp
-from functools import partial
+
+_ = load_dotenv(find_dotenv())
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Score FinQA Results")
@@ -30,6 +36,7 @@ def parse_arguments():
                        type=float, default=0.75,
                        help="CPU usage percentage (0.0-1.0, default: 0.75)")
     return parser.parse_args()
+
 
 def process_single_item(indexed_data, model_name, temperature, openai_api_key):
     """Process a single question-answer pair for scoring"""
@@ -70,19 +77,13 @@ def process_single_item(indexed_data, model_name, temperature, openai_api_key):
         }).score
         
         # Create processed result item
-        processed_result = {}
-        
-        # Clean and restructure results (same as original logic)
-        if 'question' in result_item:
-            pass  # Don't copy it
-        if 'trace' in result_item:
-            pass  # Don't copy it
-            
-        processed_result['Question'] = qa_item['Question']
-        processed_result['System Answer'] = result_item['final_answer']
-        processed_result['True Answer'] = qa_item['Answer']
-        processed_result['Level'] = qa_item['Level']
-        processed_result['Score'] = score
+        processed_result = {
+            'Question': qa_item['Question'],
+            'System Answer': result_item['final_answer'],
+            'True Answer': qa_item['Answer'],
+            'Level': qa_item['Level'],
+            'Score': score
+        }
         
         return index, score, processed_result
         
@@ -90,17 +91,14 @@ def process_single_item(indexed_data, model_name, temperature, openai_api_key):
         print(f"Error processing item {index}: {e}")
         # Return default values for failed items
         processed_result = {
-            'Question': qa_item['Question'],
+            'Question': qa_item.get('Question', 'ERROR'),
             'System Answer': result_item.get('final_answer', 'ERROR'),
-            'True Answer': qa_item['Answer'],
-            'Level': qa_item['Level'],
-            'Score': 0  # Default to 0 for failed items
+            'True Answer': qa_item.get('Answer', 'ERROR'),
+            'Level': qa_item.get('Level', 'ERROR'),
+            'Score': 0
         }
         return index, 0, processed_result
 
-_ = load_dotenv(find_dotenv())
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def main():
     args = parse_arguments()
@@ -115,7 +113,7 @@ def main():
     print(f"Loaded {len(qa_dict)} questions from {args.input_qa}")
     print(f"Loaded {len(results)} results from {args.input_results}")
     
-    # Validate that the number of questions and results match
+    # Validate data lengths match
     if len(qa_dict) != len(results):
         print(f"Warning: Number of questions ({len(qa_dict)}) does not match number of results ({len(results)})")
         min_len = min(len(qa_dict), len(results))
@@ -123,14 +121,14 @@ def main():
         qa_dict = qa_dict[:min_len]
         results = results[:min_len]
 
-    # Calculate number of processes
+    # Setup multiprocessing
     num_processes = max(1, int(mp.cpu_count() * args.cpu_usage))
     print(f"Using {num_processes} processes (CPU usage: {args.cpu_usage*100:.1f}%)")
     
-    # Create indexed data for multiprocessing
+    # Create indexed data for order preservation
     indexed_data = [(i, qa_dict[i], results[i]) for i in range(len(qa_dict))]
     
-    # Create partial function with fixed arguments
+    # Create partial function for multiprocessing
     process_func = partial(
         process_single_item,
         model_name=args.model,
@@ -143,7 +141,6 @@ def main():
     processed_results = {}
     
     with mp.Pool(processes=num_processes) as pool:
-        # Use tqdm for progress tracking
         for index, score, processed_result in tqdm(
             pool.imap(process_func, indexed_data),
             total=len(indexed_data),
@@ -158,15 +155,15 @@ def main():
     accuracy = correct / len(qa_dict)
     print(f"Accuracy: {accuracy:.4f} ({correct}/{len(qa_dict)})")
 
-    # Create the output directory if it doesn't exist
+    # Create output directory and save results
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Save results
     with open(args.output, 'w') as f:
         json.dump(final_results, f, indent=4)
         print(f"Results with scores saved to {args.output}")
+
 
 if __name__ == "__main__":
     main()
