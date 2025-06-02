@@ -27,7 +27,8 @@ class SQLiteConnection:
         if self.conn:
             self.conn.close()
 
-@mcp.tool()
+@mcp.tool(description="This database includes field such as symbol(ticker, e.g. 'A'), security name (e.g., 'Agilent Technologies')," \
+"market capitalization, price, volume, relative volume, P/E ratio, sector, headquarters location, and year founded")
 def read_query(
     query: str,
     params: Optional[List[Any]] = None,

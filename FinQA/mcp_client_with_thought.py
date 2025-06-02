@@ -5,6 +5,7 @@ from dotenv import load_dotenv, find_dotenv
 import sys
 import io
 import re
+from tqdm import tqdm
 
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain_openai import ChatOpenAI
@@ -17,6 +18,36 @@ _ = load_dotenv(find_dotenv())
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 model = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0)
+
+### Query Rewriting
+from datetime import datetime
+import re
+
+def convert_relative_years_to_absolute(question: str, current_year: int = None) -> str:
+
+    years_in_question = re.findall(r"\b(20\d{2})\b", question)
+    if years_in_question:
+        reference_year = max(map(int, years_in_question))
+    elif current_year is not None:
+        reference_year = current_year
+    else:
+        reference_year = datetime.now().year
+
+    pattern = r"(\d+)\s+years ago"
+    matches = re.findall(pattern, question, flags=re.IGNORECASE)
+
+    for match in matches:
+        years_ago = int(match)
+        absolute_year = reference_year - years_ago
+        question = re.sub(
+            rf"{match}\s+years ago",
+            f"{absolute_year}",
+            question,
+            flags=re.IGNORECASE
+        )
+
+    return question
+
 
 def wrap_tool_async(tool):
     async def wrapped(input_str: str):
@@ -65,8 +96,10 @@ async def async_func():
         with open('./data/qa_dict.json', 'r') as f:
             qa_dict = json.load(f)
 
-        for q in qa_dict:
+        for q in tqdm(qa_dict, desc="Processing questions"):
             question = q["Question"]
+            question = convert_relative_years_to_absolute(question, current_year=2025)
+            # print(question)
 
             buffer = io.StringIO()
             original_stdout = sys.stdout
@@ -97,7 +130,11 @@ async def async_func():
                 "trace": trace_log
             })
     
-    with open("./data/results_async_agent.json", "w") as f:
+    # Create the output directory if it doesn't exist
+    output_dir = "./results/v0602"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    with open("./results/v0602/results_thoughts_v1.json", "w") as f:
         json.dump(results_json, f, indent=2, ensure_ascii=False)
 
 asyncio.run(async_func())
