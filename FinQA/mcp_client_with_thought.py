@@ -17,17 +17,11 @@ from langchain_openai import ChatOpenAI
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-# ─────────────────────────────────────────────────────────
-# 1) load environment variables & check API key
-# ─────────────────────────────────────────────────────────
 _ = load_dotenv(find_dotenv())
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY is None:
     raise RuntimeError("OPENAI_API_KEY is not set in environment variables.")
 
-# ─────────────────────────────────────────────────────────
-# 2) helper: parse command-line arguments
-# ─────────────────────────────────────────────────────────
 def parse_arguments():
     parser = argparse.ArgumentParser(description="FinQA MCP Client with Thought Processing")
     parser.add_argument(
@@ -57,9 +51,6 @@ def parse_arguments():
     )
     return parser.parse_args()
 
-# ─────────────────────────────────────────────────────────
-# 3) helper: convert “X years ago” → absolute year
-# ─────────────────────────────────────────────────────────
 def convert_relative_years_to_absolute(question: str, current_year: int = None) -> str:
     years_in_question = re.findall(r"\b(20\d{2})\b", question)
     if years_in_question:
@@ -82,9 +73,6 @@ def convert_relative_years_to_absolute(question: str, current_year: int = None) 
         )
     return question
 
-# ─────────────────────────────────────────────────────────
-# 4) helper: wrap an MCP tool for LangChain compatibility
-# ─────────────────────────────────────────────────────────
 def wrap_tool_async(tool):
     async def wrapped(input_str: str):
         try:
@@ -99,28 +87,23 @@ def wrap_tool_async(tool):
         description=f"{tool.description} (Use with a JSON input string)"
     )
 
-# ─────────────────────────────────────────────────────────
-# 5) helper: clean trace logs (remove ANSI codes & extra blank lines)
-# ─────────────────────────────────────────────────────────
 def clean_trace(text: str) -> str:
     ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
     text = ansi_escape.sub('', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-# ─────────────────────────────────────────────────────────
-# 6) NEW: LLM-based composite answer & validation
-# ─────────────────────────────────────────────────────────
 async def compose_final_answer(model, all_subanswers, combined_trace):
     """
-    LLM에게 subtask answer들과 전체 trace를 주고 최종 답을 합성하게 한다.
+    Use LLM to synthesize a final answer in English, considering all subtask answers and trace.
     """
     prompt = (
-        "아래는 복잡한 금융 질문을 여러 서브태스크로 분해해서 얻은 중간 답변들과 trace입니다.\n"
-        "각 subtask의 답변과 reasoning, 계산을 고려해서, 최종 질문에 대한 정확하고 일관된 하나의 Final Answer만 한국어로 작성하세요.\n"
-        "서브태스크별 답변들:\n"
-        + "\n".join([f"서브태스크 {i+1} 답변: {ans}" for i, ans in enumerate(all_subanswers)])
-        + "\n\n전체 Trace Log:\n"
+        "Below are intermediate answers and trace logs for a complex financial question that has been decomposed into multiple subtasks.\n"
+        "Carefully review all subtask answers, reasoning, and calculations, then write a single, accurate, and self-consistent final answer in English to the original question.\n"
+        "If there are inconsistencies, use the most plausible reasoning and data.\n\n"
+        "Subtask answers:\n"
+        + "\n".join([f"Subtask {i+1} answer: {ans}" for i, ans in enumerate(all_subanswers)])
+        + "\n\nFull trace log:\n"
         + combined_trace
     )
     resp = await model.ainvoke(prompt)
@@ -128,42 +111,36 @@ async def compose_final_answer(model, all_subanswers, combined_trace):
 
 async def validate_final_answer(model, question, final_answer, combined_trace):
     """
-    LLM에게 최종 답변과 trace를 주고 논리적/수치적 일관성 검증을 시킨다.
+    Use LLM to validate whether the final answer is logically and numerically consistent with the trace.
     """
     prompt = (
-        "아래는 복잡한 금융 질문에 대해 단계적으로 reasoning을 수행한 Trace와, 도출된 Final Answer입니다.\n"
-        "Final Answer가 trace의 reasoning/계산과 논리적으로 일치하는지, plausible한지 한국어로 설명과 함께 '맞다/틀리다'로 평가하세요.\n"
-        "불일치나 의심점이 있다면 구체적으로 지적하고, 보수적으로 판단하세요.\n\n"
-        f"원본 질문: {question}\n\n"
+        "Below is a trace of step-by-step reasoning for a complex financial question, as well as a proposed Final Answer.\n"
+        "Evaluate whether the Final Answer is logically and numerically consistent with the reasoning and calculations in the trace. "
+        "Respond in English with a brief explanation, then clearly state 'VALID' if the answer is plausible and matches the reasoning, or 'INVALID' if there are inconsistencies or mistakes. "
+        "Be conservative in your judgement and point out any concrete issues you find.\n\n"
+        f"Original Question: {question}\n\n"
         f"Final Answer: {final_answer}\n\n"
         f"Trace Log:\n{combined_trace}\n"
     )
     resp = await model.ainvoke(prompt)
     return resp.content.strip() if hasattr(resp, "content") else str(resp)
 
-# ─────────────────────────────────────────────────────────
-# 7) Core processing: process a single question (with decomposition)
-# ─────────────────────────────────────────────────────────
 async def process_single_question(question_data, model_name, temperature, server_configs):
     index, question_dict = question_data
     original_question = question_dict["Question"]
-    # (a) Convert any relative-year phrases before decomposition
     question = convert_relative_years_to_absolute(original_question, current_year=2025)
-    # (b) Instantiate the ChatOpenAI LLM for all agent calls
     model = ChatOpenAI(model=model_name, api_key=OPENAI_API_KEY, temperature=temperature)
 
     async with MultiServerMCPClient(server_configs) as client:
         raw_tools = client.get_tools()
         tools_for_agent = [wrap_tool_async(t) for t in raw_tools]
 
-        # (d) Find the decomposition tool (`decompose_query`)
         decomp_tool = None
         for t in raw_tools:
             if t.name.lower() == "decompose_query":
                 decomp_tool = t
                 break
 
-        # (e) Decompose question into subtasks
         if decomp_tool is None:
             subtasks = [question]
         else:
@@ -221,12 +198,9 @@ async def process_single_question(question_data, model_name, temperature, server
             for i, ans in enumerate(all_subanswers)
         )
         trace_log = "\n\n--- Subtask Trace Separator ---\n\n".join(combined_trace)
-        # (i) Use LLM to synthesize/composite the real final answer
         composite_llm = ChatOpenAI(model=model_name, api_key=OPENAI_API_KEY, temperature=temperature)
         composite_final_answer = await compose_final_answer(composite_llm, all_subanswers, trace_log)
-        # (j) Validation step
         validation_result = await validate_final_answer(composite_llm, question, composite_final_answer, trace_log)
-        # (k) Return the result dictionary with detailed trace info
         return index, {
             "question": original_question,
             "final_answer": composite_final_answer,
@@ -244,9 +218,6 @@ def process_question_sync(question_data, model_name, temperature, server_configs
         process_single_question(question_data, model_name, temperature, server_configs)
     )
 
-# ─────────────────────────────────────────────────────────
-# 8) Main async function: load questions, spawn processes, save results
-# ─────────────────────────────────────────────────────────
 async def async_func():
     args = parse_arguments()
     num_processes = max(1, int(mp.cpu_count() * args.cpu_usage))
@@ -310,9 +281,6 @@ async def async_func():
         json.dump(results_json, f, indent=2, ensure_ascii=False)
     print(f"Results saved to {args.output}")
 
-# ─────────────────────────────────────────────────────────
-# 9) Entry point
-# ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     asyncio.run(async_func())
 
