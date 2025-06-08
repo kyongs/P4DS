@@ -112,7 +112,12 @@ def extract_keywords_using_llm(question: str) -> List[str]:
 # ─────────────────────────────────────────────────────────
 mcp = FastMCP("Chroma")
 
-@mcp.tool(description="Retrieve financial facts. Required arguments: question (str), ticker (str), fy (int).")
+@mcp.tool(description=(
+    "Retrieve financial facts. Required arguments: question (str), ticker (str), fy (int). "
+    "The 'question' must be exactly the same as the original input query. Do not paraphrase or modify it. "
+    "If the required fiscal year (fy) is not available, you may try a different year, "
+    "but the 'question' must remain unchanged—only 'fy' can be altered."
+))
 def retrieve_factual_data(
     question: Annotated[str, "question"],
     ticker:   Annotated[str, "ticker (ex: 'AAPL')"],

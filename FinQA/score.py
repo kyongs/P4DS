@@ -161,7 +161,7 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
 
     with open(args.output, 'w') as f:
-        json.dump(final_results, f, indent=4)
+        json.dump(final_results, f, indent=4, ensure_ascii=False)
         print(f"Results with scores saved to {args.output}")
 
 

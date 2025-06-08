@@ -1,97 +1,247 @@
 # servers/decomposition_server.py
 
-from typing import Annotated
+from typing import Annotated, Dict, List, Any
 from mcp.server.fastmcp import FastMCP
 import openai
+import os
+import json
+from dotenv import load_dotenv, find_dotenv
+
+# Load environment variables
+_ = load_dotenv(find_dotenv())
+api_key = os.getenv("OPENAI_API_KEY")
 
 mcp = FastMCP("Decompose")
 
-@mcp.tool(description="Decompose a financial reasoning query into 3 key subtasks.")
+@mcp.tool(description="Analyze a financial query and determine if decomposition is needed. If so, break it down into dependency-aware subtasks.")
 def decompose_query(
-    query: Annotated[str, "The financial question to break into subtasks."]
-) -> list:
+    query: Annotated[str, "The financial question to analyze and potentially break into subtasks."]
+) -> Dict[str, Any]:
     """
-    Uses a few-shot prompt to show examples of how to decompose various
-    levels of question complexity into three simple subtasks.
+    Analyzes a financial query to determine if decomposition is necessary.
+    Returns either a simple execution plan or a dependency-aware task breakdown.
+    Uses VERY CONSERVATIVE decomposition criteria - only decomposes specific patterns.
     """
+    
+    # Check if OpenAI API key is available
+    openai_api_key = api_key
+    
+    if openai_api_key is None:
+        raise RuntimeError("OPENAI_API_KEY is not set in environment variables.")
+    
+    # OpenAI-based implementation with VERY CONSERVATIVE decomposition criteria
+    analysis_prompt = r"""
+You are an expert at analyzing financial queries with a VERY CONSERVATIVE approach to decomposition.
 
-    few_shot_prompt = r"""
-You are an expert at breaking down financial queries into 3 key sub‐tasks. 
-For each example below, list exactly three lines (one subtask per line) with no extra commentary.
+IMPORTANT: You must respond with ONLY valid JSON. Do not include any text before or after the JSON response.
 
-Example 1 (Simple “factual lookup”):
-Question: What was the HQLA in Q4 of Citigroup in 2015?
-Subtasks:
-1. Retrieve Citigroup’s HQLA value as of December 31, 2015 from the database.
-2. (No calculation needed—this is a direct lookup.)
-3. Return that HQLA value (e.g., “378.5 billion dollars”).
+CRITICAL: Use EXTREMELY CONSERVATIVE criteria for decomposition. Almost all queries should be executed directly without decomposition.
 
-Example 2 (Single-step “factual lookup” + small transformation):
-Question: What was the port call costs of Royal Caribbean Cruises in 2012?
-Subtasks:
-1. Retrieve Royal Caribbean Cruises’ “port costs included in passenger ticket revenues” for the full year 2012.
-2. (No arithmetic—this is a direct field in the 10-K.)
-3. Return that value (e.g., “459.8 million dollars”).
+DECOMPOSE ONLY these specific patterns:
+1. Questions that require company identification by characteristics (sector, founding year, etc.) followed by multi-year data comparison
+   Example: "What is the difference in [financial metric] for the [sector] company founded in [year] between [year1] and [year2]?"
 
-Example 3 (“numerical calculation”):
-Question: What is the aggregate rent expense of American Tower Corp in 2014?
-Subtasks:
-1. Retrieve “aggregate rent expense (including straight-line rent)” for American Tower Corp for the year ended December 31, 2014.
-2. (No additional arithmetic—this field is already provided as a single line in the 10-K.)
-3. Return that rent expense (e.g., “655.0 million dollars”).
+KEEP SIMPLE: All other questions including:
+- Direct company name lookups
+- Single year queries
+- Simple ratio calculations
+- Any questions with explicit company names
+- Operating profit margin calculations
+- Current ratio when company is explicitly named
 
-Example 4 (“year-relative lookup” + direct lookup):
-Question: From the perspective of 6 years ago, what percentage of total minimum lease payments of Dish Network are due in 2015?
-Subtasks:
-1. Convert “6 years ago” to an absolute year (if today is 2021, that becomes 2015).
-2. Retrieve Dish Network’s “percentage of total minimum lease payments due in 2015” from the 10-K as of 2015.
-3. Return that percentage (e.g., “9.772%”).
+RESPONSE FORMAT (JSON ONLY):
+{{
+  "needs_decomposition": boolean,
+  "complexity_reason": "brief explanation",
+  "execution_plan": {{
+    "type": "simple" | "parallel" | "sequential" | "mixed",
+    "tasks": [
+      {{
+        "id": "task_1",
+        "description": "what this task does",
+        "depends_on": [],
+        "execution_group": 1
+      }}
+    ]
+  }}
+}}
 
-Example 5 (“multi-step reasoning” requiring two retrievals + a subtraction):
-Question: What is the difference of Operating Profit Margin between Air Products and Chemicals in 2016 and printing papers business of International Paper Company in 2006?
-Subtasks:
-1. Retrieve Air Products and Chemicals’ “Operating Profit Margin” for the year 2016.
-2. Retrieve International Paper Company’s “Operating Profit Margin of the printing papers business” for the year 2006.
-3. Subtract the 2006 IP printing-papers margin from the 2016 Air Products margin and return the difference (e.g., “17.00441774”).
+EXAMPLES:
 
-Example 6 (“multi-step reasoning” requiring two lookup+calculations and an average):
-Question: What is the average of current ratio between American Tower Corp in 2012 and DISH Network Corporation in 2011?
-Subtasks:
-1. Retrieve American Tower Corp’s “current assets” and “current liabilities” for 2012; compute its current ratio (current assets ÷ current liabilities).
-2. Retrieve DISH Network Corporation’s “current assets” and “current liabilities” for 2011; compute its current ratio.
-3. Compute the average of these two ratios and return that number (e.g., “1.786341177”).
+Company identification + multi-year comparison (DECOMPOSE):
+{{
+  "needs_decomposition": true,
+  "complexity_reason": "Requires company identification by characteristics followed by multi-year data comparison",
+  "execution_plan": {{
+    "type": "sequential",
+    "tasks": [
+      {{"id": "task_1", "description": "Use retrieve_factual_data to identify the financial sector company founded in 1869", "depends_on": [], "execution_group": 1}},
+      {{"id": "task_2", "description": "Use retrieve_factual_data to get the identified company's total assets for 2013", "depends_on": ["task_1"], "execution_group": 2}},
+      {{"id": "task_3", "description": "Use retrieve_factual_data to get the identified company's total assets for 2017", "depends_on": ["task_1"], "execution_group": 2}},
+      {{"id": "task_4", "description": "Calculate the difference between 2017 and 2013 total assets", "depends_on": ["task_2", "task_3"], "execution_group": 3}}
+    ]
+  }}
+}}
 
-Example 7 (“multi-tiered multi-tool reasoning”):
-Question: What is Goldman Sachs Group’s total Assets change from 2014 to 2016 multiplied by the average of current ratio between American Tower Corp in 2012 and DISH Network Corporation in 2011?
-Subtasks:
-1. Retrieve Goldman Sachs Group’s “Total Assets” as of December 31, 2014 and as of December 31, 2016; compute ΔAssets = Assets(2016) − Assets(2014).
-2. Retrieve American Tower Corp’s “current assets” & “current liabilities” for 2012, compute that current ratio; retrieve DISH Network’s “current assets” & “current liabilities” for 2011, compute that ratio; then compute the average of those two ratios.
-3. Multiply ΔAssets (from step 1) by the average current ratio (from step 2) and return the product (e.g., “48,722.45 million”).
+Direct company lookup (SIMPLE):
+{{
+  "needs_decomposition": false,
+  "complexity_reason": "Direct company lookup with explicit name",
+  "execution_plan": {{
+    "type": "simple",
+    "tasks": [{{"id": "task_1", "description": "Use retrieve_factual_data to get Apple's revenue for 2020", "depends_on": [], "execution_group": 1}}]
+  }}
+}}
 
-Now decompose this new question into exactly three steps (one subtask per line):
+Single year query (SIMPLE):
+{{
+  "needs_decomposition": false,
+  "complexity_reason": "Single year query can be handled in one retrieval",
+  "execution_plan": {{
+    "type": "simple",
+    "tasks": [{{"id": "task_1", "description": "Use retrieve_factual_data to get Microsoft's operating income for 2019", "depends_on": [], "execution_group": 1}}]
+  }}
+}}
 
-Question: {query}
-Subtasks:
+All others (SIMPLE):
+{{
+  "needs_decomposition": false,
+  "complexity_reason": "Can be handled in single retrieval",
+  "execution_plan": {{
+    "type": "simple",
+    "tasks": [{{"id": "task_1", "description": "Use retrieve_factual_data to retrieve required data", "depends_on": [], "execution_group": 1}}]
+  }}
+}}
+
+Now analyze this query with VERY CONSERVATIVE decomposition criteria and return ONLY the JSON response:
+Query: {query}
 """
 
-    # Call the OpenAI ChatCompletion endpoint (or whichever LLM you use)
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a query decomposition assistant specialized in financial analysis."},
-            {"role": "user",   "content": few_shot_prompt.format(query=query)}
-        ],
-        temperature=0.0,
-        max_tokens=200,
-        top_p=1.0,
-        frequency_penalty=0.0,
-        presence_penalty=0.0
-    )
+    try:
+        print(f"[DEBUG] Analyzing query with CONSERVATIVE OpenAI criteria: {query}")
+        
+        # Initialize OpenAI client with proper v1.0+ API
+        client = openai.OpenAI(api_key=openai_api_key)
+        
+        # Call the OpenAI ChatCompletion endpoint using new API format
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a query analysis assistant with EXTREMELY CONSERVATIVE decomposition criteria. Only decompose queries that require company identification by characteristics followed by multi-year data comparison. You must respond with ONLY valid JSON format - no explanations, no markdown, no additional text."},
+                {"role": "user", "content": analysis_prompt.format(query=query)}
+            ],
+            temperature=0.0,
+            max_tokens=800,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0
+        )
 
-    content = response["choices"][0]["message"]["content"].strip()
-    # Split into lines; return a Python list of the three subtasks
-    lines = [line.strip() for line in content.split("\n") if line.strip()]
-    return lines
+        content = response.choices[0].message.content.strip()
+        print(f"[DEBUG] OpenAI response: {content}")
+        
+        # Parse the JSON response
+        try:
+            # Clean up the response in case there are markdown code blocks
+            cleaned_content = content
+            
+            # Remove markdown code blocks
+            if "```json" in cleaned_content:
+                cleaned_content = cleaned_content.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned_content:
+                cleaned_content = cleaned_content.split("```")[1].split("```")[0].strip()
+            
+            # Remove any leading/trailing whitespace and newlines
+            cleaned_content = cleaned_content.strip()
+            
+            # Try to find JSON object boundaries if the content is malformed
+            if not cleaned_content.startswith('{'):
+                # Look for the first opening brace
+                start_idx = cleaned_content.find('{')
+                if start_idx != -1:
+                    cleaned_content = cleaned_content[start_idx:]
+            
+            if not cleaned_content.endswith('}'):
+                # Look for the last closing brace
+                end_idx = cleaned_content.rfind('}')
+                if end_idx != -1:
+                    cleaned_content = cleaned_content[:end_idx + 1]
+            
+            print(f"[DEBUG] Cleaned content for parsing: {cleaned_content[:200]}...")
+            
+            result = json.loads(cleaned_content)
+            
+            # Additional validation for specific decomposition pattern
+            if result.get("needs_decomposition", False):
+                task_count = len(result.get("execution_plan", {}).get("tasks", []))
+                
+                # Check for the specific pattern: company identification + multi-year comparison
+                pattern_keywords = ["difference", "between", "founded", "sector", "company"]
+                has_pattern = any(keyword in query.lower() for keyword in pattern_keywords)
+                
+                if has_pattern and "difference" in query.lower() and "between" in query.lower():
+                    print(f"[DEBUG] Decomposition approved for company identification + multi-year pattern: {query}")
+                else:
+                    print(f"[DEBUG] Decomposition rejected - pattern not matching: {query}")
+                    # Override to simple execution
+                    result = {
+                        "needs_decomposition": False,
+                        "complexity_reason": "Pattern does not match company identification + multi-year comparison requirement",
+                        "execution_plan": {
+                            "type": "simple",
+                            "tasks": [
+                                {
+                                    "id": "task_1",
+                                    "description": query,
+                                    "depends_on": [],
+                                    "execution_group": 1
+                                }
+                            ]
+                        }
+                    }
+            
+            print(f"[DEBUG] Final decomposition result: {result}")
+            return result
+            
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse JSON response: {e}")
+            print(f"[ERROR] Raw content: {content}")
+            print(f"[ERROR] Cleaned content: {cleaned_content[:500]}")
+            # Return simple fallback
+            return {
+                "needs_decomposition": False,
+                "complexity_reason": f"Failed to parse OpenAI JSON response: {str(e)}",
+                "execution_plan": {
+                    "type": "simple",
+                    "tasks": [
+                        {
+                            "id": "task_1",
+                            "description": query,
+                            "depends_on": [],
+                            "execution_group": 1
+                        }
+                    ]
+                }
+            }
+        
+    except Exception as e:
+        print(f"[ERROR] OpenAI decomposition analysis failed: {e}")
+        # Return simple fallback - conservative approach
+        return {
+            "needs_decomposition": False,
+            "complexity_reason": f"OpenAI API error - defaulting to simple execution: {e}",
+            "execution_plan": {
+                "type": "simple",
+                "tasks": [
+                    {
+                        "id": "task_1",
+                        "description": query,
+                        "depends_on": [],
+                        "execution_group": 1
+                    }
+                ]
+            }
+        }
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

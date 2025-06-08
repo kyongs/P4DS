@@ -22,70 +22,128 @@ if "event_loop" not in st.session_state:
 # Load environment variables
 _ = load_dotenv(find_dotenv())
 
-# Helper function to display process steps (to avoid code duplication)
-def display_process_steps(process_steps):
-    # Use columns to organize content types
-    for idx, step in enumerate(process_steps):
-        if step["role"] == "human":
-            st.markdown(f"### 👤 User:")
-            st.info(step['content'])
-        elif step["role"] == "ai":
-            st.markdown(f"### 🤖 Assistant:")
-            st.success(step['content'])
-        elif step["role"] == "tool":
-            st.markdown(f"### 🔧 Tool Result:")
-            # Try to format tool output in a more readable way
-            try:
-                # Check if it's valid JSON
-                content = step['content'].strip()
-                if (content.startswith("{") and content.endswith("}")) or (content.startswith("[") and content.endswith("]")):
-                    try:
-                        json_content = json.loads(content)
-                        st.json(json_content)
-                    except json.JSONDecodeError:
-                        # If JSON parsing fails, display as code
-                        st.code(content, language=None)
+# Helper function to display process steps with explainability
+def display_process_steps(process_steps, mcp_handler=None, question=None, final_answer=None, trace_log=None):
+    """Display process steps with enhanced formatting and explainability."""
+    
+    # Check if we have subtasks to display
+    has_subtasks = any(step["role"] in ["task_description", "task_result"] for step in process_steps)
+    
+    if has_subtasks:
+        # Display subtask-based process
+        st.markdown("### 📋 Task Decomposition and Execution")
+        
+        current_task = None
+        for idx, step in enumerate(process_steps):
+            if step["role"] == "human":
+                st.markdown("#### 👤 Original Question:")
+                st.info(step['content'])
+                st.divider()
+            elif step["role"] == "task_description":
+                current_task = step['content']
+                st.markdown(f"#### 🔍 {step['content']}")
+            elif step["role"] == "task_result":
+                if current_task:
+                    with st.expander(f"📝 Result for: {current_task.replace('**Task ', '').replace('**:', '')}", expanded=True):
+                        st.success(step['content'])
+                    current_task = None
                 else:
-                    # Check if it looks like an error message
-                    if "ERROR" in content and "{" in content and "}" in content:
-                        # Try to extract just the JSON part
+                    st.success(step['content'])
+                if idx < len(process_steps) - 1:
+                    st.divider()
+            elif step["role"] == "assistant":
+                st.markdown("#### 🎯 Final Composed Answer:")
+                st.success(step['content'])
+        
+        # Add explainability section if we have the necessary data
+        if mcp_handler and question and final_answer and trace_log:
+            st.divider()
+            with st.expander("🔍 **Detailed Explanation & Citations**", expanded=False):
+                with st.spinner("Generating explanation..."):
+                    try:
+                        explanation_data = asyncio.run(
+                            mcp_handler.generate_explanation(question, final_answer, trace_log)
+                        )
+                        
+                        if explanation_data["explanation"]:
+                            st.markdown("#### 📝 Step-by-Step Explanation:")
+                            st.markdown(explanation_data["explanation"])
+                        
+                        if explanation_data["citation"]:
+                            st.markdown("#### 📚 Citations:")
+                            st.markdown(explanation_data["citation"])
+                        
+                        if explanation_data["citation_paragraph"]:
+                            st.markdown("#### 📄 Cited Paragraphs:")
+                            st.code(explanation_data["citation_paragraph"], language=None)
+                        
+                    except Exception as e:
+                        st.error(f"Failed to generate explanation: {e}")
+    else:
+        # Display traditional step-by-step process
+        st.markdown("### 🔍 Step-by-Step Process")
+        
+        for idx, step in enumerate(process_steps):
+            if step["role"] == "human":
+                st.markdown("#### 👤 User:")
+                st.info(step['content'])
+            elif step["role"] == "ai" or step["role"] == "assistant":
+                st.markdown("#### 🤖 Assistant:")
+                st.success(step['content'])
+            elif step["role"] == "tool":
+                st.markdown("#### 🔧 Tool Result:")
+                # Try to format tool output in a more readable way
+                try:
+                    # Check if it's valid JSON
+                    content = step['content'].strip()
+                    if (content.startswith("{") and content.endswith("}")) or (content.startswith("[") and content.endswith("]")):
                         try:
-                            # Find JSON-like parts and try to parse them
-                            start_idx = content.find("{")
-                            end_idx = content.rfind("}") + 1
-                            if start_idx >= 0 and end_idx > start_idx:
-                                json_str = content[start_idx:end_idx]
-                                # Try to parse and display as JSON
-                                json_content = json.loads(json_str)
-                                st.error(f"Error: {json_content.get('message', 'Unknown error')}")
-                                # Still show the full content as code
-                                st.code(content, language=None)
-                            else:
-                                st.code(content, language=None)
-                        except:
-                            # If extraction fails, just show as code
+                            json_content = json.loads(content)
+                            st.json(json_content)
+                        except json.JSONDecodeError:
+                            # If JSON parsing fails, display as code
                             st.code(content, language=None)
                     else:
-                        # Regular output as code
-                        st.code(content, language=None)
-            except Exception as e:
-                # Fallback for any unexpected errors
-                st.warning(f"Error displaying result: {str(e)}")
-                st.code(step['content'], language=None)
-        elif step["role"] == "action":
-            st.markdown(f"### 🛠️ Tool Call:")
-            st.warning(step['content'])
-        elif step["role"] == "thought":
-            st.markdown(f"### 💭 Thinking Process:")
-            st.info(step['content'])
-        else:
-            # Handle any other step types
-            st.markdown(f"### ℹ️ {step['role'].capitalize()}:")
-            st.text(step['content'])
-        
-        # Add separator if not the last step
-        if idx < len(process_steps) - 1:
-            st.divider()
+                        # Check if it looks like an error message
+                        if "ERROR" in content and "{" in content and "}" in content:
+                            # Try to extract just the JSON part
+                            try:
+                                # Find JSON-like parts and try to parse them
+                                start_idx = content.find("{")
+                                end_idx = content.rfind("}") + 1
+                                if start_idx >= 0 and end_idx > start_idx:
+                                    json_str = content[start_idx:end_idx]
+                                    # Try to parse and display as JSON
+                                    json_content = json.loads(json_str)
+                                    st.error(f"Error: {json_content.get('message', 'Unknown error')}")
+                                    # Still show the full content as code
+                                    st.code(content, language=None)
+                                else:
+                                    st.code(content, language=None)
+                            except:
+                                # If extraction fails, just show as code
+                                st.code(content, language=None)
+                        else:
+                            # Regular output as code
+                            st.code(content, language=None)
+                except Exception as e:
+                    # Fallback for any unexpected errors
+                    st.warning(f"Error displaying result: {str(e)}")
+                    st.code(step['content'], language=None)
+            elif step["role"] == "action":
+                st.markdown("#### 🛠️ Tool Call:")
+                st.warning(step['content'])
+            elif step["role"] == "thought":
+                st.markdown("#### 💭 Thinking Process:")
+                st.info(step['content'])
+            else:
+                # Handle any other step types
+                st.markdown(f"#### ℹ️ {step['role'].capitalize()}:")
+                st.text(step['content'])
+            
+            # Add separator if not the last step
+            if idx < len(process_steps) - 1:
+                st.divider()
 
 # Initialize session state
 if "session_initialized" not in st.session_state:
@@ -116,7 +174,7 @@ atexit.register(cleanup_on_app_close)
 
 def print_message():
     """
-    Displays chat history on the screen (simplified version).
+    Displays chat history on the screen with enhanced explainability.
     """
     for i, message in enumerate(st.session_state.history):
         if message["role"] == "user":
@@ -129,7 +187,16 @@ def print_message():
                 # Check if we have process steps for this message
                 if "process_key" in message and message["process_key"] in st.session_state:
                     process_steps = st.session_state[message["process_key"]]
-                    # Show process steps in expander - avoid nesting expanders when display_process_steps is called
+                    
+                    # Get additional data for explainability
+                    response_data = message.get("response_data", {})
+                    trace_log = None
+                    if isinstance(response_data, dict) and "trace" in response_data:
+                        # This is a complex query with task decomposition
+                        trace_data = response_data.get("trace", {})
+                        trace_log = trace_data.get("trace_log", None)
+                    
+                    # Show process steps with button
                     if st.button("🔍 **View Step-by-Step Process**", key=f"process_btn_{i}"):
                         st.session_state[f"show_process_{i}"] = True
                     
@@ -140,8 +207,20 @@ def print_message():
                             st.session_state[f"show_process_{i}"] = False
                             st.rerun()
                         
-                        # Display process steps
-                        display_process_steps(process_steps)
+                        # Get the original question for this message pair
+                        question = None
+                        if i > 0 and st.session_state.history[i-1]["role"] == "user":
+                            question = st.session_state.history[i-1]["content"]
+                        
+                        # Display process steps with explainability
+                        display_process_steps(
+                            process_steps, 
+                            mcp_handler=st.session_state.mcp_handler,
+                            question=question,
+                            final_answer=message["content"],
+                            trace_log=trace_log
+                        )
+                        
                 # For backward compatibility with old messages
                 elif f"process_steps_{i}" in st.session_state:  
                     process_steps = st.session_state[f"process_steps_{i}"]
@@ -156,8 +235,19 @@ def print_message():
                             st.session_state[f"show_old_process_{i}"] = False
                             st.rerun()
                         
-                        # Display process steps
-                        display_process_steps(process_steps)
+                        # Get the original question for this message pair
+                        question = None
+                        if i > 0 and st.session_state.history[i-1]["role"] == "user":
+                            question = st.session_state.history[i-1]["content"]
+                        
+                        # Display process steps (no explainability for old format)
+                        display_process_steps(
+                            process_steps,
+                            mcp_handler=st.session_state.mcp_handler,
+                            question=question,
+                            final_answer=message["content"],
+                            trace_log=None
+                        )
 
 async def initialize_session():
     """
@@ -200,7 +290,12 @@ async def process_user_query(user_query, text_placeholder, timeout_seconds=60):
     
     # Store in history
     st.session_state.history.append({"role": "user", "content": user_query})
-    st.session_state.history.append({"role": "assistant", "content": final_text})
+    assistant_message = {
+        "role": "assistant", 
+        "content": final_text,
+        "response_data": resp  # Store the full response data for explainability
+    }
+    st.session_state.history.append(assistant_message)
     
     # Store process steps in session state for this message
     message_id = len(st.session_state.history) - 1  # Index of the assistant message
@@ -224,8 +319,8 @@ def main():
 
     **Example questions you can ask:**
     - "What was the hqla in the q4 of Citigroup in 2015?"
-    - "In 2011 what was the SL Green Realty Corp's percent of the change in the account balance at end of year"
-    - "What is the long-term component of BlackRock at 12/31/2011?"
+    - "Which one's Operating Profit Margin is bigger between Air Products and Chemicals in 2014 and printing papers business of International Paper Company in 2006?"
+    - "what is the AON's decrease observed in the additions for tax positions of prior years as of 2018, in millions?"
     """)
 
     # Sidebar configuration
@@ -274,6 +369,7 @@ def main():
                 "fin": "💰",      # Finance
                 "math": "🧮",     # Math
                 "sqlite": "🗃️",   # Database
+                "decompose": "🧩", # Decomposition
                 "unknown": "🔧"   # Unknown tools
             }
             
@@ -291,7 +387,7 @@ def main():
                 st.markdown(f"**Servers**: {len(non_empty_servers)}")
             
             # Create simpler UI with cleaner tool display
-            for server_name in ["chroma", "fin", "math", "sqlite", "unknown"]:
+            for server_name in ["chroma", "fin", "math", "sqlite", "decompose", "unknown"]:
                 # Skip if server doesn't exist in our data
                 if server_name not in st.session_state.server_tools:
                     continue
@@ -419,8 +515,21 @@ def main():
                             st.session_state["show_inline_process"] = False
                             st.rerun()
                         
-                        # Display process steps
-                        display_process_steps(process_steps)
+                        # Get trace log for explainability
+                        trace_log = None
+                        if isinstance(resp, dict) and "trace" in resp:
+                            # Complex query with task decomposition
+                            trace_data = resp.get("trace", {})
+                            trace_log = trace_data.get("trace_log", None)
+                        
+                        # Display process steps with explainability
+                        display_process_steps(
+                            process_steps,
+                            mcp_handler=st.session_state.mcp_handler,
+                            question=user_query,
+                            final_answer=final_text,
+                            trace_log=trace_log
+                        )
                 
                 st.rerun()
         else:
