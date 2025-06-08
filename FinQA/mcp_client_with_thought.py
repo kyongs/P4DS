@@ -1,5 +1,3 @@
-# mcp_client_with_thought.py
-
 import asyncio
 import argparse
 import io
@@ -16,7 +14,6 @@ from tqdm import tqdm
 
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -60,12 +57,10 @@ def parse_arguments():
     )
     return parser.parse_args()
 
-
 # ─────────────────────────────────────────────────────────
 # 3) helper: convert “X years ago” → absolute year
 # ─────────────────────────────────────────────────────────
 def convert_relative_years_to_absolute(question: str, current_year: int = None) -> str:
-    """Convert expressions like '2 years ago' to an absolute year."""
     years_in_question = re.findall(r"\b(20\d{2})\b", question)
     if years_in_question:
         reference_year = max(map(int, years_in_question))
@@ -87,16 +82,10 @@ def convert_relative_years_to_absolute(question: str, current_year: int = None) 
         )
     return question
 
-
 # ─────────────────────────────────────────────────────────
 # 4) helper: wrap an MCP tool for LangChain compatibility
 # ─────────────────────────────────────────────────────────
 def wrap_tool_async(tool):
-    """
-    Given an MCP tool object, return a LangChain Tool wrapper that expects
-    a JSON string as input, parses it, invokes `tool.ainvoke(data)`, and returns
-    its result.
-    """
     async def wrapped(input_str: str):
         try:
             data = json.loads(input_str)
@@ -110,7 +99,6 @@ def wrap_tool_async(tool):
         description=f"{tool.description} (Use with a JSON input string)"
     )
 
-
 # ─────────────────────────────────────────────────────────
 # 5) helper: clean trace logs (remove ANSI codes & extra blank lines)
 # ─────────────────────────────────────────────────────────
@@ -120,53 +108,70 @@ def clean_trace(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
+# ─────────────────────────────────────────────────────────
+# 6) NEW: LLM-based composite answer & validation
+# ─────────────────────────────────────────────────────────
+async def compose_final_answer(model, all_subanswers, combined_trace):
+    """
+    LLM에게 subtask answer들과 전체 trace를 주고 최종 답을 합성하게 한다.
+    """
+    prompt = (
+        "아래는 복잡한 금융 질문을 여러 서브태스크로 분해해서 얻은 중간 답변들과 trace입니다.\n"
+        "각 subtask의 답변과 reasoning, 계산을 고려해서, 최종 질문에 대한 정확하고 일관된 하나의 Final Answer만 한국어로 작성하세요.\n"
+        "서브태스크별 답변들:\n"
+        + "\n".join([f"서브태스크 {i+1} 답변: {ans}" for i, ans in enumerate(all_subanswers)])
+        + "\n\n전체 Trace Log:\n"
+        + combined_trace
+    )
+    resp = await model.ainvoke(prompt)
+    return resp.content.strip() if hasattr(resp, "content") else str(resp)
+
+async def validate_final_answer(model, question, final_answer, combined_trace):
+    """
+    LLM에게 최종 답변과 trace를 주고 논리적/수치적 일관성 검증을 시킨다.
+    """
+    prompt = (
+        "아래는 복잡한 금융 질문에 대해 단계적으로 reasoning을 수행한 Trace와, 도출된 Final Answer입니다.\n"
+        "Final Answer가 trace의 reasoning/계산과 논리적으로 일치하는지, plausible한지 한국어로 설명과 함께 '맞다/틀리다'로 평가하세요.\n"
+        "불일치나 의심점이 있다면 구체적으로 지적하고, 보수적으로 판단하세요.\n\n"
+        f"원본 질문: {question}\n\n"
+        f"Final Answer: {final_answer}\n\n"
+        f"Trace Log:\n{combined_trace}\n"
+    )
+    resp = await model.ainvoke(prompt)
+    return resp.content.strip() if hasattr(resp, "content") else str(resp)
 
 # ─────────────────────────────────────────────────────────
-# 6) Core processing: process a single question (with decomposition)
+# 7) Core processing: process a single question (with decomposition)
 # ─────────────────────────────────────────────────────────
 async def process_single_question(question_data, model_name, temperature, server_configs):
-    """
-    1) Decompose the original question into subtasks via the `decompose_query` tool.
-    2) For each subtask:
-       - Run a Zero-Shot ReAct agent (with all available tools) on that subtask
-       - Capture both the agent’s answer and its printed trace
-    3) Concatenate all sub-answers into one final_answer string
-    4) Concatenate all sub-traces into one combined trace
-    5) Return (index, { "question": original, "final_answer": ..., "trace": ... })
-    """
     index, question_dict = question_data
     original_question = question_dict["Question"]
-
-    # (a) Convert any relative‐year phrases before decomposition
+    # (a) Convert any relative-year phrases before decomposition
     question = convert_relative_years_to_absolute(original_question, current_year=2025)
-
     # (b) Instantiate the ChatOpenAI LLM for all agent calls
     model = ChatOpenAI(model=model_name, api_key=OPENAI_API_KEY, temperature=temperature)
 
-    # (c) Open an MCP client that will launch all servers (chroma, fin, math, sqlite, decomposition, …)
     async with MultiServerMCPClient(server_configs) as client:
         raw_tools = client.get_tools()
-        # Wrap each raw MCP tool into a LangChain Tool
         tools_for_agent = [wrap_tool_async(t) for t in raw_tools]
 
-        # (d) Find the raw decomposition tool (`decompose_query`) among raw_tools
+        # (d) Find the decomposition tool (`decompose_query`)
         decomp_tool = None
         for t in raw_tools:
             if t.name.lower() == "decompose_query":
                 decomp_tool = t
                 break
 
-        # (e) Call the decomposition tool to get a list of subtasks
+        # (e) Decompose question into subtasks
         if decomp_tool is None:
             subtasks = [question]
         else:
             try:
-                # The tool expects a JSON‐like dict with key “query”
                 decomp_result = await decomp_tool.ainvoke({"query": question})
                 if isinstance(decomp_result, list):
                     subtasks = decomp_result
                 elif isinstance(decomp_result, str):
-                    # Maybe it returned a JSON‐encoded string
                     try:
                         parsed = json.loads(decomp_result)
                         if isinstance(parsed, list):
@@ -180,7 +185,6 @@ async def process_single_question(question_data, model_name, temperature, server
             except Exception:
                 subtasks = [question]
 
-        # (f) Define a single LangChain agent bound to all wrapped tools
         agent = initialize_agent(
             tools=tools_for_agent,
             llm=model,
@@ -192,16 +196,13 @@ async def process_single_question(question_data, model_name, temperature, server
         all_subanswers = []
         combined_trace = []
 
-        # (g) Loop over each subtask, run the agent, capture answer + trace
         for (step_idx, subq) in enumerate(subtasks):
             buffer = io.StringIO()
             old_stdout = sys.stdout
             sys.stdout = buffer  # redirect prints into buffer
 
             try:
-                # Print a header so the buffer shows which subtask is running
                 print(f"\n\n▶ Subtask {step_idx+1}/{len(subtasks)}: {subq}")
-                # Invoke the agent on the subtask
                 agent_output = await agent.ainvoke(subq, config={"return_messages": True})
                 messages = agent_output.get("messages", [])
                 sub_answer = messages[-1].content if messages else ""
@@ -215,46 +216,42 @@ async def process_single_question(question_data, model_name, temperature, server
             all_subanswers.append(sub_answer)
             combined_trace.append(trace_output)
 
-        # (h) Combine all sub-answers into one final answer string.
-        #     You can customize formatting here. For example, add bullet points, etc.
-        #     In this version, we simply number them and separate by two newlines.
-        final_answer = "\n\n".join(
+        subanswers_section = "\n\n".join(
             f"Subtask {i+1} answer: {ans}"
             for i, ans in enumerate(all_subanswers)
         )
-
-        # (i) Combine all traces into one big trace string, separated by a visible separator
         trace_log = "\n\n--- Subtask Trace Separator ---\n\n".join(combined_trace)
-
-        # (j) Return the result dictionary
+        # (i) Use LLM to synthesize/composite the real final answer
+        composite_llm = ChatOpenAI(model=model_name, api_key=OPENAI_API_KEY, temperature=temperature)
+        composite_final_answer = await compose_final_answer(composite_llm, all_subanswers, trace_log)
+        # (j) Validation step
+        validation_result = await validate_final_answer(composite_llm, question, composite_final_answer, trace_log)
+        # (k) Return the result dictionary with detailed trace info
         return index, {
             "question": original_question,
-            "final_answer": final_answer,
-            "trace": trace_log
+            "final_answer": composite_final_answer,
+            "subanswers": all_subanswers,
+            "trace": {
+                "subtask_answers": subanswers_section,
+                "trace_log": trace_log,
+                "composite_llm_output": composite_final_answer,
+                "validation_llm_output": validation_result
+            }
         }
 
-
 def process_question_sync(question_data, model_name, temperature, server_configs):
-    """
-    Synchronous wrapper so we can use multiprocessing. This simply
-    runs the async function in an event loop and returns its result.
-    """
     return asyncio.run(
         process_single_question(question_data, model_name, temperature, server_configs)
     )
 
-
 # ─────────────────────────────────────────────────────────
-# 7) Main async function: load questions, spawn processes, save results
+# 8) Main async function: load questions, spawn processes, save results
 # ─────────────────────────────────────────────────────────
 async def async_func():
     args = parse_arguments()
-
-    # Determine # of worker processes
     num_processes = max(1, int(mp.cpu_count() * args.cpu_usage))
     print(f"Using {num_processes} processes (CPU usage: {args.cpu_usage * 100:.1f}%)")
 
-    # Define server configurations (including the new decomposition server)
     server_configs = {
         "chroma": {
             "command": "python",
@@ -276,24 +273,19 @@ async def async_func():
             "args": ["./servers/sqlite_server.py"],
             "transport": "stdio"
         },
-        # New decomposition server entry:
         "decompose": {
             "command": "python",
             "args": ["./servers/decomposition_server.py"],
             "transport": "stdio"
-        }
+        },
     }
 
-    # Load the list of questions from JSON
     with open(args.input, "r") as f:
         qa_dict = json.load(f)
 
     print(f"Processing {len(qa_dict)} questions from {args.input}")
-
-    # Create (index, question_dict) pairs so results can be reassembled in order
     indexed_questions = [(i, q) for i, q in enumerate(qa_dict)]
 
-    # Build the partial function that each worker will call
     process_func = partial(
         process_question_sync,
         model_name=args.model,
@@ -310,24 +302,17 @@ async def async_func():
         ):
             results_dict[index] = result
 
-    # Reassemble results in original order
     results_json = [results_dict[i] for i in range(len(qa_dict))]
-
-    # Ensure output directory exists
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-
-    # Save final JSON
     with open(args.output, "w") as f:
         json.dump(results_json, f, indent=2, ensure_ascii=False)
-
     print(f"Results saved to {args.output}")
 
-
 # ─────────────────────────────────────────────────────────
-# 8) Entry point
+# 9) Entry point
 # ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Run the main async function
     asyncio.run(async_func())
+
