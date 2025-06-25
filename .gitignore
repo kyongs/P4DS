@@ -2,3 +2,5 @@ temp
 data/test_db
 data/test_data
 .env
+test_db_600
+test_db_1000
